@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # Build dependencies needed for bcrypt and cryptography wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
