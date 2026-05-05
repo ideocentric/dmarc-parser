@@ -7,6 +7,7 @@ Multi-tenant DMARC aggregate report ingestion, analysis, and alerting system. Su
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
+- [Production Deployment](#production-deployment)
 - [Quick Start — Docker (Functional Testing)](#quick-start--docker-functional-testing)
 - [Local Development Setup](#local-development-setup)
 - [Running the Stack](#running-the-stack)
@@ -49,6 +50,8 @@ flowchart TD
     P --> DB
 ```
 
+Three deployment topologies are supported — see [Production Deployment](#production-deployment) for details.
+
 **Multi-tenancy:** A single database holds all clients. Every DMARC data table (`reports`, `records`, `flags`, `processed_files`) carries a `client_id` column — all queries are automatically scoped to the authenticated user's permitted clients. Super-admins can query across all clients.
 
 **User roles:**
@@ -60,6 +63,26 @@ flowchart TD
 | `user` | `viewer` | Read-only access to assigned client data; can change own password |
 
 A user can hold different per-client roles on different clients (e.g. admin on one, viewer on another).
+
+---
+
+## Production Deployment
+
+Full production deployment uses Terraform to provision infrastructure on **AWS** or **Azure**, GitHub Actions for CI/CD, and `docker-compose.prod.yml` to run the stack. Three topologies are available:
+
+| Topology | Description | When to use |
+|---|---|---|
+| `standalone` | All services — including PostgreSQL — on one VM | Development, small deployments |
+| `split_vm` | App VM in a public subnet; PostgreSQL VM in a private subnet | Separation without managed service cost |
+| `split_managed` | App VM in a public subnet; AWS RDS or Azure PostgreSQL Flexible Server | Production, compliance requirements |
+
+**Terraform configurations:**
+- `terraform/aws/` — VPC, EC2, ECR, IAM, RDS (all three topologies)
+- `terraform/azure/` — VNet, VM, ACR, Managed Identity, PostgreSQL Flexible Server (all three topologies)
+
+**CI/CD:** `.github/workflows/deploy.yml` (AWS) and `.github/workflows/deploy-azure.yml` (Azure) build images on push to `main`, push to the container registry, and deploy via AWS SSM or Azure Run Command without requiring SSH access from CI runner IPs.
+
+See [docs/deployment-guide.md](docs/deployment-guide.md) for the complete step-by-step guide covering Terraform provisioning, CI/CD setup, certbot SSL bootstrap, split-topology database configuration, and backup procedures.
 
 ---
 
@@ -550,18 +573,26 @@ All settings are read from the `.env` file (or environment variables in Docker).
 | `APP_ENV` | `development` | `development` or `production` |
 | `SECRET_KEY` | — | JWT signing key — **must be set** |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `DATABASE_URL` | `sqlite:///data/dmarc.db` | SQLAlchemy connection URL for the single application database |
+| `DATABASE_URL` | `sqlite:///data/dmarc.db` | SQLAlchemy connection URL — use PostgreSQL in production |
 | `REPORTS_BASE_DIR` | `data/reports` | Root directory for incoming and archive folders |
 | `ARCHIVE_RETENTION_DAYS` | `7` | Days to keep archived report files |
-| `ENCRYPTION_KEY` | — | Fernet key for IMAP password encryption |
+| `ENCRYPTION_KEY` | — | Fernet key for IMAP password encryption — **must be set** |
 | `GEOIP_DB_PATH` | `data/GeoLite2-City.mmdb` | Path to MaxMind GeoLite2-City or GeoLite2-Country database |
+| `MFA_REQUIRED` | `false` | When `true`, all local accounts must enrol in TOTP MFA before accessing the platform |
+| `CLAMAV_ENABLED` | `false` | Enable ClamAV antivirus scanning of ingested files |
+| `CLAMAV_HOST` | `localhost` | clamd hostname — use `clamav` when running the Docker Compose service |
+| `CLAMAV_PORT` | `3310` | clamd TCP port |
+| `CLAMAV_FAIL_OPEN` | `false` | When `false` (default), reject files if clamd is unreachable; when `true`, allow through with a warning |
 | `AZURE_TENANT_ID` | — | Azure AD tenant ID (SSO) |
 | `AZURE_CLIENT_ID` | — | Azure AD application client ID (SSO) |
 | `AZURE_CLIENT_SECRET` | — | Azure AD client secret (SSO) |
 | `AZURE_REDIRECT_URI` | `http://localhost:5173/auth/callback` | OAuth2 redirect URI |
+| `AZURE_AUTO_PROVISION` | `false` | When `true`, unknown Azure SSO users are auto-created on first login; when `false`, they receive a 403 |
 | `API_HOST` | `0.0.0.0` | Bind address for uvicorn |
 | `API_PORT` | `8000` | Port for uvicorn |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed CORS origins |
+| `ADMIN_EMAIL` | — | Email for the super_admin account created on first boot (seed only) |
+| `ADMIN_PASSWORD` | — | Password for the super_admin account created on first boot (seed only) |
 
 **SQLite vs PostgreSQL:** The default `DATABASE_URL` uses SQLite for local development convenience. For production and Docker, use PostgreSQL — changing the URL is all that is required:
 
@@ -575,60 +606,99 @@ DATABASE_URL=postgresql+psycopg2://user:pass@localhost:5432/dmarc
 
 ```
 dmarc/
-├── alembic/                Alembic migration environment
-│   ├── env.py              Connects Alembic to project models and settings
-│   ├── script.py.mako      Template for generated migration files
+├── .github/
+│   ├── dependabot.yml          Automated dependency updates (pip, npm, Docker, Actions, Terraform)
+│   └── workflows/
+│       ├── deploy.yml          CI/CD — test → build → push to ECR → deploy to AWS via SSM
+│       └── deploy-azure.yml    CI/CD — test → build → push to ACR → deploy to Azure via Run Command
+├── alembic/                    Alembic migration environment
+│   ├── env.py
+│   ├── script.py.mako
 │   └── versions/
 │       ├── 0001_initial_schema.py
 │       └── 0002_per_client_roles_and_password_reset.py
-├── alembic.ini             Alembic configuration
-├── api/                    FastAPI application
-│   ├── auth/               JWT and Azure SSO helpers
-│   ├── deps.py             Auth and DB dependencies (FastAPI Depends)
-│   └── routes/             auth, clients, users, reports, flags, analytics, imap
+├── alembic.ini
+├── api/                        FastAPI application
+│   ├── auth/                   JWT and Azure SSO helpers
+│   ├── deps.py                 Auth and DB dependencies (FastAPI Depends)
+│   └── routes/                 auth, clients, users, reports, flags, analytics, imap
 ├── cli/
-│   └── manage.py           Management CLI
+│   └── manage.py               Management CLI
 ├── core/
-│   ├── config.py           Settings (pydantic-settings, reads .env)
-│   ├── crypto.py           Fernet encrypt/decrypt for IMAP credentials
-│   ├── database.py         SQLAlchemy engine + SessionLocal + get_db()
+│   ├── config.py               Settings (pydantic-settings, reads .env)
+│   ├── crypto.py               Fernet encrypt/decrypt for IMAP credentials
+│   ├── database.py             SQLAlchemy engine + SessionLocal + get_db()
 │   ├── models/
-│   │   └── __init__.py     All models in one place — clients, users, reports,
-│   │                       records, flags, auth_results, processed_files
-│   ├── schemas/            Pydantic request/response models
-│   └── security.py         bcrypt password hashing
+│   │   └── __init__.py         All models — clients, users, reports, records, flags, auth_results, processed_files
+│   ├── schemas/                Pydantic request/response models
+│   └── security.py             bcrypt password hashing
 ├── docker/
-│   ├── entrypoint.sh       Container startup: migrations → seed → uvicorn
-│   └── seed.py             Idempotent first-boot seed (admin user + test client)
-├── frontend/               React + Vite application
+│   ├── entrypoint.sh           Container startup: migrations → seed → uvicorn
+│   ├── nginx.bootstrap.conf    HTTP-only nginx config for initial certbot certificate acquisition
+│   ├── nginx.prod.conf         Production nginx config — HTTPS + ACME passthrough + security headers
+│   └── seed.py                 Idempotent first-boot seed (admin user + test client)
+├── docs/                       Documentation
+│   ├── deployment-guide.md     Full production deployment guide (Terraform, CI/CD, certbot, backups)
+│   ├── developer-guide.md
+│   ├── admin-guide.md
+│   └── user-guide.md
+├── frontend/                   React + Vite application
 │   ├── src/
-│   │   ├── api/            Axios API clients
-│   │   ├── components/     Layout, UI primitives, shared components
-│   │   ├── contexts/       AuthContext, ClientContext
-│   │   └── pages/          Login, ChangePassword, Dashboard, Reports, Flags, Analytics, Clients, Users
-│   ├── Dockerfile          Multi-stage: Node build → nginx serve
-│   └── nginx.conf          nginx config (SPA routing + /api proxy)
+│   │   ├── api/                Axios API clients
+│   │   ├── components/         Layout, UI primitives, shared components
+│   │   ├── contexts/           AuthContext, ClientContext
+│   │   └── pages/              Login, ChangePassword, Dashboard, Reports, Flags, Analytics, Clients, Users
+│   ├── Dockerfile              Multi-stage: Node build → nginx serve
+│   └── nginx.conf              nginx config (SPA routing + /api proxy, dev/Docker only)
 ├── ingestion/
-│   ├── archiver.py         Move processed files; purge old archives
-│   ├── extractor.py        Decompress .gz and .zip files
-│   ├── geo_enrichment.py   Retroactively populate geo fields on existing records
-│   ├── imap_fetcher.py     IMAP connection and attachment extraction
-│   ├── parser.py           DMARC XML → Python dataclasses
-│   ├── pipeline.py         Orchestrates extract → parse → write → flag
-│   ├── scheduler.py        APScheduler (archive purge + IMAP polling)
-│   ├── watcher.py          watchdog file system observer
-│   └── writer.py           Persist parsed reports to the database
+│   ├── extractor.py            Decompress .gz and .zip files
+│   ├── geo_enrichment.py       Retroactively populate geo fields on existing records
+│   ├── imap_fetcher.py         IMAP connection and attachment extraction
+│   ├── parser.py               DMARC XML → Python dataclasses
+│   ├── pipeline.py             Orchestrates extract → parse → write → flag
+│   ├── scanner.py              ClamAV antivirus integration (optional)
+│   ├── scheduler.py            APScheduler (archive purge + IMAP polling)
+│   ├── watcher.py              watchdog file system observer
+│   └── writer.py               Persist parsed reports to the database
 ├── intelligence/
-│   ├── engine.py           Runs all rules; stores Flag records
-│   └── rules/              base, auth, geo, senders, volume (pluggable)
-├── tests/                  pytest test suite
-├── .env.example            Environment variable template
-├── .env.docker             Docker functional-test environment
-├── docker-compose.yml      Four-service stack: PostgreSQL, API, watcher, frontend
-├── Dockerfile              Python backend image
-├── geoip/                  Place GeoLite2-City.mmdb here (not committed)
-├── main.py                 File watcher + scheduler entry point
-└── requirements.txt        Python dependencies
+│   ├── engine.py               Runs all rules; stores Flag records
+│   └── rules/                  base, auth, geo, senders, volume (pluggable)
+├── terraform/
+│   ├── aws/                    AWS infrastructure (VPC, EC2, ECR, IAM, RDS)
+│   │   ├── main.tf             Root module — wires networking, security, registry, iam, compute, database
+│   │   ├── variables.tf
+│   │   ├── outputs.tf
+│   │   ├── terraform.tfvars.example
+│   │   └── modules/
+│   │       ├── networking/     VPC, subnets, IGW, NAT Gateway, route tables
+│   │       ├── security/       App and DB security groups
+│   │       ├── compute/        EC2, Elastic IP, key pair
+│   │       ├── registry/       ECR repositories + lifecycle policies
+│   │       ├── iam/            EC2 instance profile (ECR pull + SSM access), CI user
+│   │       └── database/       DB EC2 (split_vm) or RDS PostgreSQL (split_managed)
+│   └── azure/                  Azure infrastructure (VNet, VM, ACR, Managed Identity, PostgreSQL)
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       ├── terraform.tfvars.example
+│       └── modules/
+│           ├── networking/     VNet, subnets, NAT Gateway, delegated subnet
+│           ├── security/       App and DB NSGs
+│           ├── compute/        VM, static public IP, NIC
+│           ├── registry/       Azure Container Registry
+│           ├── iam/            User-assigned Managed Identity + AcrPull role
+│           └── database/       DB VM (split_vm) or PostgreSQL Flexible Server (split_managed)
+├── tests/                      pytest test suite
+├── .env.example                Local development environment template
+├── .env.docker                 Docker functional-test environment
+├── .env.prod.example           Production environment template
+├── docker-compose.yml          Dev/test stack: PostgreSQL, API, watcher, frontend
+├── docker-compose.prod.yml     Production stack: ECR/ACR images, certbot, ClamAV
+├── docker-compose.bootstrap.yml One-time SSL bootstrap override (HTTP-only nginx for certbot)
+├── Dockerfile                  Python backend image
+├── geoip/                      Place GeoLite2-City.mmdb here (not committed)
+├── main.py                     File watcher + scheduler entry point
+└── requirements.txt            Python dependencies
 ```
 
 ---
