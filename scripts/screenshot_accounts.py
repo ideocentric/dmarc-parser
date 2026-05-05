@@ -9,13 +9,16 @@ Usage:
     python scripts/screenshot_accounts.py [options]
 
 Options:
-    --base-url URL        Platform URL (default: http://localhost:5010)
-    --admin-email EMAIL   Super-admin email (default: admin@example.com)
-    --admin-password PASS Super-admin password (default: changeme123)
-    --client-slug SLUG    Client to assign test accounts to (default: acme-test)
-    --rebuild             Reset all test account state before setup
-    --state-file PATH     Where to save credentials + MFA secret
-                          (default: scripts/.screenshot_state.json)
+    --base-url URL           Platform URL (default: http://localhost:5010)
+    --admin-email EMAIL      Super-admin email (default: admin@example.com)
+    --admin-password PASS    Super-admin password (default: changeme123)
+    --admin-mfa-secret SEC   Base32 TOTP secret for the admin account. Required
+                             when the admin has MFA enabled. If omitted, the
+                             6-digit code is prompted interactively.
+    --client-slug SLUG       Client to assign test accounts to (default: acme-test)
+    --rebuild                Reset all test account state before setup
+    --state-file PATH        Where to save credentials + MFA secret
+                             (default: scripts/.screenshot_state.json)
 
 After running, the state file contains everything capture_screenshots.py needs.
 """
@@ -29,9 +32,9 @@ from pathlib import Path
 import httpx
 import pyotp
 
-DEFAULT_VIEWER_EMAIL = "screenshot-viewer@example.com"
+DEFAULT_VIEWER_EMAIL = "alice@example.com"
 DEFAULT_VIEWER_PASS = "ScreenshotViewer1!"
-DEFAULT_MFA_EMAIL = "screenshot-mfa@example.com"
+DEFAULT_MFA_EMAIL = "bob@example.com"
 DEFAULT_MFA_PASS = "ScreenshotMfa1!"
 
 API_TIMEOUT = 15.0
@@ -46,15 +49,22 @@ def _api(base_url: str) -> str:
 
 
 def _login(api: str, email: str, password: str, mfa_secret: str | None = None) -> str:
-    """Return an access token. Handles MFA automatically if mfa_secret is given."""
+    """Return an access token. Handles MFA automatically if mfa_secret is given.
+
+    When MFA is required and no secret is available, prompts interactively for
+    the 6-digit code — works for manual runs of the screenshot setup script.
+    """
     r = httpx.post(f"{api}/auth/login", json={"email": email, "password": password},
                    timeout=API_TIMEOUT)
     r.raise_for_status()
     data = r.json()
     if data.get("mfa_required"):
-        if not mfa_secret:
-            raise RuntimeError(f"MFA required for {email} but no secret provided")
-        code = pyotp.TOTP(mfa_secret).now()
+        if mfa_secret:
+            code = pyotp.TOTP(mfa_secret).now()
+        else:
+            # Interactive fallback for admin accounts — enter the code from
+            # your authenticator app (Microsoft Authenticator, Authy, etc.)
+            code = input(f"  MFA code required for {email} — enter the 6-digit code from your authenticator app: ").strip()
         r2 = httpx.post(f"{api}/auth/mfa/verify",
                         json={"mfa_token": data["mfa_token"], "code": code},
                         timeout=API_TIMEOUT)
@@ -124,13 +134,22 @@ def _confirm_mfa(api: str, token: str, secret: str) -> None:
         code = totp.now()
         r = httpx.post(f"{api}/auth/mfa/confirm", json={"code": code},
                        headers=_headers(token), timeout=API_TIMEOUT)
-        if r.status_code == 204:
+        if r.status_code in (200, 204):
             return
         if r.status_code == 401 and attempt < 2:
             print("  TOTP code rejected (clock boundary?) — waiting for next window...")
             time.sleep(31)
             continue
         r.raise_for_status()
+
+
+def _admin_reset_mfa(api: str, admin_token: str, user_id: int) -> None:
+    """Super-admin reset of a user's MFA — no TOTP secret required."""
+    r = httpx.post(f"{api}/users/{user_id}/reset-mfa",
+                   headers=_headers(admin_token), timeout=API_TIMEOUT)
+    if r.status_code in (400, 404):
+        return  # user has no MFA — nothing to do
+    r.raise_for_status()
 
 
 def _disable_mfa(api: str, token: str, secret: str) -> None:
@@ -175,7 +194,8 @@ def setup(args: argparse.Namespace) -> None:
 
     # --- Admin token ---
     print("\n[1/4] Authenticating as super_admin...")
-    admin_token = _login(api, args.admin_email, args.admin_password)
+    admin_token = _login(api, args.admin_email, args.admin_password,
+                         mfa_secret=getattr(args, "admin_mfa_secret", None))
     print("  OK")
 
     # --- Verify client exists ---
@@ -218,16 +238,11 @@ def setup(args: argparse.Namespace) -> None:
         print("  --rebuild: resetting MFA test account")
         _reset_password(api, admin_token, mfa_user["id"], args.mfa_password)
         _reactivate_user(api, admin_token, mfa_user["id"])
-        # Disable MFA if it was previously enabled
-        saved_secret = state.get("mfa_test_secret")
-        if saved_secret:
-            print("  Disabling existing MFA...")
-            try:
-                mfa_token = _login(api, args.mfa_email, args.mfa_password, saved_secret)
-                _disable_mfa(api, mfa_token, saved_secret)
-                print("  MFA disabled")
-            except Exception as e:
-                print(f"  Could not disable MFA ({e}) — will attempt fresh setup anyway")
+        # Use the admin reset-mfa endpoint — works whether or not the old
+        # TOTP secret is available in state, so --rebuild is always clean.
+        print("  Clearing MFA via admin reset...")
+        _admin_reset_mfa(api, admin_token, mfa_user["id"])
+        print("  MFA cleared")
         state.pop("mfa_test_secret", None)
         state.pop("mfa_enabled", None)
         mfa_user = _find_user(_get_users(api, admin_token), args.mfa_email)
@@ -247,6 +262,9 @@ def setup(args: argparse.Namespace) -> None:
     # Enable MFA on the test account (if not already done)
     if not state.get("mfa_enabled"):
         print("  Setting up TOTP MFA...")
+        # Clear any previously confirmed MFA before setup — handles partial
+        # prior runs where confirm succeeded but state was lost.
+        _admin_reset_mfa(api, admin_token, mfa_user["id"])
         mfa_token = _login(api, args.mfa_email, args.mfa_password)
         secret = _setup_mfa(api, mfa_token)
         print(f"  Confirming with TOTP code...")
@@ -260,6 +278,8 @@ def setup(args: argparse.Namespace) -> None:
     state["client_slug"] = args.client_slug
     state["admin_email"] = args.admin_email
     state["admin_password"] = args.admin_password
+    if getattr(args, "admin_mfa_secret", None):
+        state["admin_mfa_secret"] = args.admin_mfa_secret
 
     # Save state
     state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -280,6 +300,10 @@ def main() -> None:
                         help="Platform URL (default: http://localhost:5010)")
     parser.add_argument("--admin-email", default="admin@example.com")
     parser.add_argument("--admin-password", default="changeme123")
+    parser.add_argument("--admin-mfa-secret", default=None,
+                        help="TOTP secret for the admin account (base32 string from your "
+                             "authenticator app setup). If omitted and MFA is required, "
+                             "the code is prompted interactively.")
     parser.add_argument("--client-slug", default="acme-test",
                         help="Client slug to assign test accounts to (default: acme-test)")
     parser.add_argument("--viewer-email", default=DEFAULT_VIEWER_EMAIL)

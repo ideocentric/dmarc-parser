@@ -37,10 +37,11 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dmarc -d dmarc"]
+      test: ["CMD-SHELL", "psql -U dmarc -d dmarc -c 'SELECT 1' > /dev/null 2>&1"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   # ── FastAPI backend ──────────────────────────────────────────────────────────

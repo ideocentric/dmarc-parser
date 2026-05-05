@@ -61,20 +61,35 @@ class Capturer:
         page.fill("input[type=password]", password)
         page.click("button[type=submit]")
 
-        # Check if MFA screen appeared (3-second window)
+        # Check if MFA screen appeared. Use a generous timeout — the login
+        # endpoint rate-limiter (5/min) can delay responses on busy runs.
         try:
-            page.wait_for_selector("input[inputmode=numeric]", timeout=3000)
+            page.wait_for_selector("input[inputmode=numeric]", timeout=8000)
             if not mfa_secret:
                 raise RuntimeError(f"MFA required for {email} but no secret available")
-            code = pyotp.TOTP(mfa_secret).now()
-            page.fill("input[inputmode=numeric]", code)
-            page.click("button[type=submit]")
+            # Retry loop handles TOTP replay-rejection (same code within 90 s)
+            # and transient 401s at TOTP window boundaries.
+            for attempt in range(3):
+                code = pyotp.TOTP(mfa_secret).now()
+                page.fill("input[inputmode=numeric]", code)
+                page.click("button[type=submit]")
+                try:
+                    page.wait_for_function(
+                        "() => !window.location.pathname.startsWith('/login')",
+                        timeout=6000,
+                    )
+                    break  # navigated away — success
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(31)  # wait for next TOTP window
+                    else:
+                        raise RuntimeError(f"MFA login failed for {email} after 3 attempts")
+            return  # already off /login
         except Exception as e:
             if "Timeout" not in str(e):
                 raise
 
-        # Poll until we navigate away from /login — handles the race where the
-        # React redirect completes before wait_for_url() is even called.
+        # No MFA — poll until we navigate away from /login.
         page.wait_for_function(
             "() => !window.location.pathname.startsWith('/login')",
             timeout=12000,
@@ -131,6 +146,8 @@ class Capturer:
             "ss-a-08": "ss-a-08-imap-standard-form.png",
             "ss-a-09": "ss-a-09-imap-m365-form.png",
             "ss-a-10": "ss-a-10-imap-test-connection.png",
+            "ss-a-11": "ss-a-11-client-security-tab.png",
+            "ss-a-12": "ss-a-12-danger-zone.png",
         }
         dest = self.out / name_map.get(shot_id.lower(), filename)
         if selector:
@@ -339,6 +356,12 @@ class Capturer:
         page.locator("button", has_text="Mail Ingestion").click()
         page.wait_for_timeout(500)
 
+    def _open_security_tab(self, page: Page, slug: str) -> None:
+        """Expand a client card and switch to the Security tab."""
+        self._expand_client(page, slug)
+        page.locator("button", has_text="Security").click()
+        page.wait_for_timeout(500)
+
     def _ss_a_07(self, page: Page) -> None:
         """IMAP tab — empty state showing 'Configure Mail Ingestion' button."""
         self._nav(page, "/clients")
@@ -404,6 +427,26 @@ class Capturer:
         page.wait_for_timeout(4000)   # wait for connection attempt (will fail — no real server)
         self._shot(page, "SS-A-10")
 
+    def _ss_a_11_12(self, page: Page) -> None:
+        """Security tab: MFA toggles (SS-A-11) and Danger Zone (SS-A-12).
+
+        Both screenshots live on the same Security tab — navigate once and take
+        two shots: the first with the view at the top (MFA toggles), the second
+        after scrolling down to the Danger Zone section.
+        """
+        self._nav(page, "/clients")
+        self._open_security_tab(page, self.state["client_slug"])
+
+        # SS-A-11: MFA toggle switches are at the top of the Security panel
+        if self._should_run("SS-A-11"):
+            self._shot(page, "SS-A-11")
+
+        # SS-A-12: scroll to the Danger Zone (Export Data + Purge Client)
+        if self._should_run("SS-A-12"):
+            page.locator("text=Danger Zone").first.scroll_into_view_if_needed()
+            page.wait_for_timeout(400)
+            self._shot(page, "SS-A-12")
+
     # ── Orchestration ──────────────────────────────────────────────────────
 
     def run_all(self, pw: Playwright) -> None:
@@ -457,12 +500,14 @@ class Capturer:
 
         # ── Admin (super_admin) session ────────────────────────────────────
         admin_ids = {"SS-A-01", "SS-A-02", "SS-A-03", "SS-A-04", "SS-A-05",
-                     "SS-A-06", "SS-A-07", "SS-A-08", "SS-A-09", "SS-A-10"}
+                     "SS-A-06", "SS-A-07", "SS-A-08", "SS-A-09", "SS-A-10",
+                     "SS-A-11", "SS-A-12"}
         if not self.only or self.only.upper() in admin_ids:
             print("\n[Admin session]")
             with self._new_context(pw) as ctx:
                 page = ctx.new_page()
-                self._login(page, self.state["admin_email"], self.state["admin_password"])
+                self._login(page, self.state["admin_email"], self.state["admin_password"],
+                            mfa_secret=self.state.get("admin_mfa_secret"))
                 self._set_client(page, slug)
 
                 if self._should_run("SS-A-01"): self._ss_a_01(page)
@@ -475,13 +520,17 @@ class Capturer:
                 if self._should_run("SS-A-08"): self._ss_a_08(page)
                 if self._should_run("SS-A-09"): self._ss_a_09(page)
                 if self._should_run("SS-A-10"): self._ss_a_10(page)
+
+                if any(self._should_run(i) for i in ("SS-A-11", "SS-A-12")):
+                    self._ss_a_11_12(page)
+
                 page.close()
 
     def print_summary(self) -> None:
         print("\n── Summary ──")
         ok = [k for k, v in self._results.items() if v == "ok"]
         errors = {k: v for k, v in self._results.items() if v.startswith("error")}
-        print(f"  Captured: {len(ok)}/26")
+        print(f"  Captured: {len(ok)}/28")
         if errors:
             print("  Errors:")
             for k, v in errors.items():

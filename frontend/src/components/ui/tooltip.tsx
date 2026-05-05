@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 interface TooltipProps {
-  text: string;
+  text: ReactNode;
   children: ReactNode;
   className?: string;
 }
@@ -18,7 +18,7 @@ export function Tooltip({ text, children, className }: TooltipProps) {
       <span
         className={cn(
           // Positioning: above the trigger, left-aligned
-          "pointer-events-none absolute bottom-full left-0 z-50 mb-2 w-64",
+          "pointer-events-none absolute bottom-full left-0 z-50 mb-2 w-max max-w-sm",
           // Solid dark background — readable on any page background
           "rounded-md bg-neutral-900 px-3 py-2 text-xs leading-relaxed text-neutral-50 shadow-lg",
           // Show on hover

@@ -3,13 +3,42 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 from core.models import Client, Domain
 from ingestion.extractor import compute_checksum, extract_xml
+from ingestion.geo_enrichment import enrich_geo
 from ingestion.parser import parse_dmarc_xml
 from ingestion.scanner import scan_bytes
+from ingestion.whois_enrichment import enrich_whois
 from ingestion.writer import write_report
 from intelligence.engine import run_intelligence
 
 log = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".gz", ".zip"}
+
+
+def _enrich_report_records(db: Session, client_id: int, client_slug: str) -> None:
+    """Geo and WHOIS enrichment for records written by the just-ingested report.
+
+    Both enrichment functions filter to unenriched records (geo_country IS NULL,
+    whois_org IS NULL), so they naturally target only the new records without
+    needing an explicit report-level filter. WHOIS results are cached in
+    ip_whois_cache, so repeat IPs across reports are a fast DB read.
+
+    Failures are non-fatal — the report and intelligence flags are already
+    committed before this runs.
+    """
+    try:
+        geo = enrich_geo(db, client_id)
+        if geo["records_updated"]:
+            log.info("[%s] Geo enriched %d record(s)", client_slug, geo["records_updated"])
+    except Exception:
+        log.warning("[%s] Geo enrichment failed (non-fatal)", client_slug, exc_info=True)
+
+    try:
+        whois = enrich_whois(db, client_id)
+        if whois["records_updated"]:
+            log.info("[%s] WHOIS enriched %d record(s) (%d unique IP(s) queried)",
+                     client_slug, whois["records_updated"], whois["ips_queried"])
+    except Exception:
+        log.warning("[%s] WHOIS enrichment failed (non-fatal)", client_slug, exc_info=True)
 
 
 def process_file(path: Path, client_slug: str, db: Session) -> bool:
@@ -72,6 +101,7 @@ def process_file(path: Path, client_slug: str, db: Session) -> bool:
         )
         if report:
             run_intelligence(db, report)
+            _enrich_report_records(db, client.id, client_slug)
         return report is not None
     except Exception:
         log.exception(

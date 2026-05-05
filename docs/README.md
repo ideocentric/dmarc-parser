@@ -55,7 +55,7 @@ python scripts/screenshot_accounts.py \
   --admin-password changeme123
 ```
 
-### Step 2 — Capture all 26 screenshots
+### Step 2 — Capture all 28 screenshots
 
 ```bash
 python scripts/capture_screenshots.py
@@ -181,7 +181,7 @@ Output files are written to `docs/pdfs/` (git-ignored — regenerate as needed):
 
 ## Screenshot Filename List
 
-26 screenshots are required across the user guide and admin guide. Copy the filenames below directly into your file browser or terminal.
+28 screenshots are required across the user guide and admin guide. Copy the filenames below directly into your file browser or terminal.
 
 ### User Guide (16 screenshots)
 
@@ -204,7 +204,7 @@ ss-u-15-mfa-setup-qr.png
 ss-u-16-mfa-disable.png
 ```
 
-### Admin Guide (10 screenshots)
+### Admin Guide (12 screenshots)
 
 ```
 ss-a-01-flag-acknowledge.png
@@ -217,9 +217,11 @@ ss-a-07-imap-empty-state.png
 ss-a-08-imap-standard-form.png
 ss-a-09-imap-m365-form.png
 ss-a-10-imap-test-connection.png
+ss-a-11-client-security-tab.png
+ss-a-12-danger-zone.png
 ```
 
-### All 26 filenames (combined, for `mkdir` / `touch` convenience)
+### All 28 filenames (combined, for `mkdir` / `touch` convenience)
 
 ```
 ss-u-01-login.png
@@ -248,6 +250,8 @@ ss-a-07-imap-empty-state.png
 ss-a-08-imap-standard-form.png
 ss-a-09-imap-m365-form.png
 ss-a-10-imap-test-connection.png
+ss-a-11-client-security-tab.png
+ss-a-12-danger-zone.png
 ```
 
 Create the `images/` directory and placeholder files in one command (run from the project root):
@@ -279,7 +283,9 @@ mkdir -p docs/images && touch $(printf 'docs/images/%s ' \
   ss-a-07-imap-empty-state.png \
   ss-a-08-imap-standard-form.png \
   ss-a-09-imap-m365-form.png \
-  ss-a-10-imap-test-connection.png)
+  ss-a-10-imap-test-connection.png \
+  ss-a-11-client-security-tab.png \
+  ss-a-12-danger-zone.png)
 ```
 
 This creates empty placeholder files so you can track which screenshots still need to be taken (`ls -lh docs/images/` — any 0-byte file is outstanding).

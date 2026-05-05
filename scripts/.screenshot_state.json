@@ -1,11 +1,12 @@
 {
-  "viewer_email": "screenshot-viewer@example.com",
+  "viewer_email": "alice@example.com",
   "viewer_password": "ScreenshotViewer1!",
-  "mfa_test_email": "screenshot-mfa@example.com",
+  "mfa_test_email": "bob@example.com",
   "mfa_test_password": "ScreenshotMfa1!",
-  "mfa_test_secret": "MAGS5XHIBI56UBSXGVF6LYF7XCHY5EDU",
+  "mfa_test_secret": "HE6SDNS4GHQJ47233CTUBIH2L2BQU3UG",
   "mfa_enabled": true,
   "client_slug": "acme-test",
   "admin_email": "admin@example.com",
-  "admin_password": "changeme123"
+  "admin_password": "changeme123",
+  "admin_mfa_secret": "4QLIZMBQYAP3QUY5HXFZZLY6GDF6O4TX"
 }

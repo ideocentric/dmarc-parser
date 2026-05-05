@@ -132,8 +132,21 @@ export function FlagList() {
                       )}
                     </td>
                     <td className="px-4 py-2"><SeverityBadge severity={flag.severity} /></td>
-                    <td className="px-4 py-2 font-mono text-xs text-muted-foreground max-w-xs truncate">
-                      {flag.detail ? JSON.stringify(flag.detail) : "—"}
+                    <td className="px-4 py-2 font-mono text-xs text-muted-foreground max-w-xs">
+                      {flag.detail ? (
+                        <Tooltip
+                          className="w-full"
+                          text={
+                            <pre className="font-mono text-xs leading-relaxed">
+                              {JSON.stringify(flag.detail, null, 2)}
+                            </pre>
+                          }
+                        >
+                          <span className="block truncate">
+                            {JSON.stringify(flag.detail)}
+                          </span>
+                        </Tooltip>
+                      ) : "—"}
                     </td>
                     <td className="px-4 py-2 text-muted-foreground">
                       {new Date(flag.created_at).toLocaleDateString()}

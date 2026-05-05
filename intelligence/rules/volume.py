@@ -33,7 +33,7 @@ class VolumeSpikeRule(BaseRule):
                     "source_ip": record.source_ip,
                     "current_count": record.count,
                     "historical_average": round(float(avg), 1),
-                    "multiplier": round(record.count / avg, 1),
+                    "multiplier": round(record.count / float(avg), 1),
                 },
             )]
         return []

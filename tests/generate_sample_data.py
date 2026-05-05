@@ -742,12 +742,15 @@ def _write_drop_script(output_dir: Path, scenarios: list[dict], target_note: str
         "# Baseline files (days_ago=2) are dropped first so the volume_spike rule",
         "# has historical data to compare against.",
         "#",
-        "# Usage:",
-        f"#   bash drop_files.sh <path-to-incoming-folder>",
+        "# Can be run from any directory:",
+        f"#   bash sample-data/{target_note}/drop_files.sh <path-to-incoming-folder>",
         "#",
-        "# Example (Docker):",
-        f"#   bash drop_files.sh docker-data/reports/incoming/{target_note}",
+        "# Example (Docker, run from project root):",
+        f"#   bash sample-data/{target_note}/drop_files.sh docker-data/reports/incoming/{target_note}",
         "#",
+        # Resolve the directory containing this script so cp works regardless
+        # of where the caller's working directory is.
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
         "DEST=${1:?Usage: $0 <destination-folder>}",
         'mkdir -p "$DEST"',
         "",
@@ -756,11 +759,11 @@ def _write_drop_script(output_dir: Path, scenarios: list[dict], target_note: str
     baselines = [s for s in scenarios if s["days_ago"] >= 2]
     rest      = [s for s in scenarios if s["days_ago"] < 2]
     for s in baselines:
-        lines.append(f'cp "{s["filename"]}" "$DEST/" && echo "  dropped: {s["filename"]}"')
+        lines.append(f'cp "$SCRIPT_DIR/{s["filename"]}" "$DEST/" && echo "  dropped: {s["filename"]}"')
     lines += ["", "sleep 3   # give the watcher time to process baseline files", ""]
     lines.append("# Scenario files — drop after baseline is ingested")
     for s in rest:
-        lines.append(f'cp "{s["filename"]}" "$DEST/" && echo "  dropped: {s["filename"]}"')
+        lines.append(f'cp "$SCRIPT_DIR/{s["filename"]}" "$DEST/" && echo "  dropped: {s["filename"]}"')
         lines.append("sleep 2")
     lines += ["", 'echo ""', 'echo "All files dropped. Check the watcher log and UI."']
 

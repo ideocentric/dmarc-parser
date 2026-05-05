@@ -267,7 +267,9 @@ Open the Clients page, expand a client card, and click the **Security** tab. Tog
 
 ### Offboarding a client
 
-When a client leaves the platform their data must be exported and then fully purged. Both actions are super\_admin only and are available from the **Security** tab of the client card.
+When a client leaves the platform their data must be exported and then fully purged. Both actions are super\_admin only and are available from the **Danger Zone** section of the client's Security tab.
+
+![Danger Zone — Export Data and Purge Client controls](images/ss-a-12-danger-zone.png)
 
 #### Step 1 — Export
 
@@ -347,6 +349,8 @@ Expand a client card, then click the **Security** tab. What you can change depen
 | Require MFA for viewers | ✓ | ✓ |
 
 The Security tab is only visible to users who can edit that client. MFA policy changes take effect on the user's next login — existing sessions are not interrupted. See [MFA enforcement — four levels](#mfa-enforcement--four-levels) for the full enforcement rules.
+
+![Client Security tab — MFA policy toggles](images/ss-a-11-client-security-tab.png)
 
 ### Adding a domain to a client
 
@@ -495,4 +499,5 @@ Your personal account settings (change password, set up MFA, sign out) are the s
 | SS-A-08 | Standard IMAP configuration form | Clients → Mail Ingestion → Standard IMAP selected |
 | SS-A-09 | Microsoft 365 configuration form | Clients → Mail Ingestion → Microsoft 365 selected |
 | SS-A-10 | Test connection result (ideally both success and failure states) | Clients → Mail Ingestion → after saving → Test Connection |
-| SS-A-11 | Client Security tab showing MFA policy toggles | Clients → expand a card → Security tab |
+| SS-A-11 | Client Security tab — MFA policy toggle switches | Clients → expand a card → Security tab |
+| SS-A-12 | Danger Zone — Export Data and Purge Client buttons | Clients → expand a card → Security tab → scroll to Danger Zone |
