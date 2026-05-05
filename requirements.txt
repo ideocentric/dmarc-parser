@@ -1,0 +1,41 @@
+# Core
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic[email]>=2.7.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.0
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+psycopg2-binary>=2.9.9     # PostgreSQL driver
+aiosqlite>=0.20.0          # async SQLite driver (local dev fallback)
+
+# Auth
+PyJWT>=2.8.0               # replaces python-jose (CVE-2024-33664/33663, abandoned)
+bcrypt>=4.0.0
+python-multipart>=0.0.9    # form data for login
+slowapi>=0.1.9             # rate limiting for login/refresh endpoints
+pyotp>=2.9.0               # TOTP generation/validation (RFC 6238) for MFA
+qrcode[pil]>=7.4.1         # QR code generation for authenticator app enrolment (pil extra pulls in Pillow)
+msal>=1.28.0               # Azure SSO
+
+# File ingestion
+defusedxml>=0.7.1          # safe XML parsing — prevents entity expansion attacks
+watchdog>=4.0.0
+apscheduler>=3.10.0
+imapclient>=2.3.1          # IMAP mailbox polling
+cryptography>=42.0.4       # Fernet encryption for stored credentials (42.0.0-42.0.3 had CVE-2024-26130)
+
+# Intelligence
+geoip2>=4.8.0              # MaxMind GeoLite2
+ipwhois>=1.2.0             # WHOIS / RDAP lookups for IP ownership
+
+# Dev / testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0              # FastAPI test client
+playwright>=1.45.0         # automated screenshot capture (docs)
+faker>=26.0.0              # deterministic fake data for DMARC sample report generation
+dnspython>=2.6.0           # DNS lookups for build_ip_table.py (SPF/MX resolution)
+python-clamd>=1.0.2        # ClamAV daemon client — required only when CLAMAV_ENABLED=true

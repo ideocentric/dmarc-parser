@@ -1,0 +1,41 @@
+# Python artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Virtual environment
+.venv/
+venv/
+
+# Local data (bind-mounted at runtime)
+data/
+docker-data/
+
+# Frontend (built inside the frontend container, not needed in backend image)
+frontend/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Example Data
+example-data/
