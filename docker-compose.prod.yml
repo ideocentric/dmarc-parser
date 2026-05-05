@@ -1,0 +1,142 @@
+name: dmarc-prod
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Production deployment — pulls images from ECR, serves HTTPS via certbot.
+#
+# Required environment variables (set in shell or CI/CD environment):
+#   ECR_REGISTRY     — e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com
+#   ECR_API_REPO     — e.g. dmarc-prod-api
+#   ECR_FRONTEND_REPO — e.g. dmarc-prod-frontend
+#   IMAGE_TAG        — git SHA short (8 chars) or semver tag
+#
+# All application settings come from .env.prod (see .env.prod.example).
+#
+# First-time setup: see deployment guide — certbot bootstrap must run before
+# this compose file can start the frontend with SSL.
+#
+# Deploy:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: dmarc-prod-db
+    env_file: .env.prod
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  api:
+    image: ${ECR_REGISTRY}/${ECR_API_REPO}:${IMAGE_TAG:-latest}
+    container_name: dmarc-prod-api
+    entrypoint: ["/bin/bash", "docker/entrypoint.sh"]
+    env_file: .env.prod
+    volumes:
+      - app-data:/app/data
+      - ./geoip:/app/geoip:ro
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── File watcher + scheduler ─────────────────────────────────────────────────
+  watcher:
+    image: ${ECR_REGISTRY}/${ECR_API_REPO}:${IMAGE_TAG:-latest}
+    container_name: dmarc-prod-watcher
+    command: python main.py
+    env_file: .env.prod
+    volumes:
+      - app-data:/app/data
+      - ./geoip:/app/geoip:ro
+    networks:
+      - internal
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── React frontend (nginx + TLS) ─────────────────────────────────────────────
+  # Exposes ports 80 and 443 directly — no host-level reverse proxy required.
+  # Port 80 serves the ACME challenge and redirects all other traffic to 443.
+  frontend:
+    image: ${ECR_REGISTRY}/${ECR_FRONTEND_REPO}:${IMAGE_TAG:-latest}
+    container_name: dmarc-prod-frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot-certs:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot:ro
+    networks:
+      - internal
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Let's Encrypt certificate renewal ────────────────────────────────────────
+  # Runs certbot renew every 12 hours. Nginx picks up renewed certificates on
+  # the next daily reload (see deployment guide cron entry for nginx -s reload).
+  certbot:
+    image: certbot/certbot:latest
+    container_name: dmarc-prod-certbot
+    volumes:
+      - certbot-certs:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c "trap exit TERM;
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet;
+          sleep 12h & wait $${!};
+        done"
+    restart: unless-stopped
+
+  # ── ClamAV antivirus daemon ───────────────────────────────────────────────────
+  # First-boot note: freshclam downloads ~300 MB of signatures before clamd
+  # accepts connections. The 300s start_period gives it time to complete.
+  clamav:
+    image: clamav/clamav:stable
+    container_name: dmarc-prod-clamav
+    networks:
+      - internal
+    volumes:
+      - clamav-data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  app-data:
+  certbot-certs:
+  certbot-webroot:
+  clamav-data:

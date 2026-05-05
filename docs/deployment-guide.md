@@ -1,6 +1,6 @@
 # DMARC Intelligence Platform — Deployment Guide
 
-*Ubuntu 24.04 LTS — Single-server Docker deployment*
+*Ubuntu 24.04 LTS — Single-server Docker deployment with CI/CD*
 
 ---
 
@@ -8,56 +8,57 @@
 
 1. [Overview](#overview)
 2. [Prerequisites](#prerequisites)
-3. [System Preparation](#system-preparation)
-4. [Install Docker and Docker Compose](#install-docker-and-docker-compose)
-5. [Firewall Configuration](#firewall-configuration)
-6. [Clone the Application](#clone-the-application)
-7. [Configure the Environment](#configure-the-environment)
-8. [GeoIP Database](#geoip-database)
-9. [First Start](#first-start)
-10. [Nginx Reverse Proxy](#nginx-reverse-proxy)
-11. [SSL Certificate](#ssl-certificate)
-12. [Initial Setup via CLI](#initial-setup-via-cli)
-13. [Automated Backups](#automated-backups)
-14. [Ongoing Operations](#ongoing-operations)
-15. [Updating the Application](#updating-the-application)
-16. [Troubleshooting](#troubleshooting)
+3. [Provision Infrastructure with Terraform](#provision-infrastructure-with-terraform)
+4. [Configure GitHub Actions CI/CD](#configure-github-actions-cicd)
+5. [First-Time Server Setup](#first-time-server-setup)
+6. [Configure the Environment](#configure-the-environment)
+7. [GeoIP Database](#geoip-database)
+8. [SSL Certificate with Certbot (Docker)](#ssl-certificate-with-certbot-docker)
+9. [First Deployment](#first-deployment)
+10. [Initial Application Setup via CLI](#initial-application-setup-via-cli)
+11. [Automated Certificate Renewal](#automated-certificate-renewal)
+12. [Automated Backups](#automated-backups)
+13. [Ongoing Operations](#ongoing-operations)
+14. [Updating the Application](#updating-the-application)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-This guide walks through deploying the DMARC Intelligence Platform to a fresh Ubuntu 24.04 LTS server. The platform runs as four Docker containers behind a host-level nginx reverse proxy with a Let's Encrypt SSL certificate.
+The DMARC Intelligence Platform runs as six Docker containers managed by Docker Compose. In production, the frontend container handles TLS directly — no host-level reverse proxy is required.
 
 ```
 Internet
-    │  HTTPS :443
+    │  HTTPS :443 / HTTP :80
     ▼
-┌─────────────────────────────────────┐
-│  nginx (host process)               │
-│  Terminates TLS, proxies to :5010   │
-└────────────────┬────────────────────┘
-                 │  HTTP :5010
-    ┌────────────▼────────────────────────────────┐
-    │  Docker network (internal bridge)            │
-    │                                              │
-    │  ┌─────────────┐    ┌─────────────────────┐ │
-    │  │  frontend   │    │       api           │ │
-    │  │  nginx:5010 │───▶│  uvicorn:8000       │ │
-    │  │  React SPA  │    │  FastAPI + Alembic  │ │
-    │  └─────────────┘    └──────────┬──────────┘ │
-    │                                │             │
-    │  ┌─────────────┐    ┌──────────▼──────────┐ │
-    │  │   watcher   │    │        db           │ │
-    │  │  File watch │    │  PostgreSQL 16      │ │
-    │  │  IMAP poll  │    │  port 5432 internal │ │
-    │  └─────────────┘    └─────────────────────┘ │
-    └─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Docker network (dmarc-prod)                                    │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  frontend (nginx)  :80 :443                              │   │
+│  │  - HTTP :80  → ACME challenge or 301 redirect to HTTPS  │   │
+│  │  - HTTPS :443 → serves React SPA, proxies /api/*        │   │
+│  └───────────────────────┬──────────────────────────────────┘   │
+│                          │                                      │
+│  ┌───────────────────────▼──────────────────────────────────┐   │
+│  │  api  (FastAPI / uvicorn :8000)                          │   │
+│  └───────────────────────┬──────────────────────────────────┘   │
+│                          │                                      │
+│  ┌───────────┐  ┌────────▼──────────┐  ┌───────────────────┐   │
+│  │  watcher  │  │  db (PostgreSQL)  │  │  certbot          │   │
+│  │  + sched  │  │  :5432 internal   │  │  renewal loop     │   │
+│  └───────────┘  └───────────────────┘  └───────────────────┘   │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  clamav (clamd :3310 internal)                           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Port exposure:** Only port 5010 (frontend container) is accessible from the host. Ports 8000 (API) and 5432 (database) are internal to the Docker network only. The host's nginx proxies external HTTPS traffic to port 5010.
+**Port exposure:** The frontend container binds ports 80 and 443 on the host. Ports 8000 (API), 5432 (PostgreSQL), and 3310 (ClamAV) are internal to the Docker network only.
 
-**Data persistence:** PostgreSQL data and report files are stored in `./docker-data/` as Docker bind mounts. GeoIP databases are stored in `./geoip/` and are never wiped by reset operations.
+**Image delivery:** Container images are built by GitHub Actions, pushed to Amazon ECR, and pulled to the server on each deployment. The server never builds images locally.
 
 ---
 
@@ -65,327 +66,361 @@ Internet
 
 Before starting, ensure you have:
 
-- [ ] A fresh Ubuntu 24.04 LTS server with root or sudo access
-- [ ] A registered domain name with an **A record** pointing to the server's public IP (e.g. `dmarc.example.com → 203.0.113.10`)
-  - DNS propagation must complete before the SSL certificate step
-- [ ] Ports **80** and **443** open inbound from the internet
-- [ ] SSH access to the server
-- [ ] (Optional but recommended) A free MaxMind account for GeoIP data: https://www.maxmind.com/en/geolite2/signup
-- [ ] (Optional) An Azure AD app registration if you plan to use Microsoft 365 OAuth2 IMAP or Azure SSO
+- [ ] Terraform ≥ 1.5 installed locally
+- [ ] AWS CLI configured with credentials that can create VPCs, EC2, ECR, and IAM resources
+- [ ] A registered domain name — DNS will be pointed to the server's Elastic IP after provisioning
+- [ ] An SSH key pair on your local machine (`~/.ssh/id_rsa` and `~/.ssh/id_rsa.pub`)
+- [ ] A GitHub repository containing the application code
+- [ ] (Optional) A free MaxMind account for GeoIP data
 
-### Recommended server sizing
+### Server sizing with ClamAV
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | 2 vCPU | 2–4 vCPU |
-| RAM | 4 GB | 4–8 GB |
-| Disk | 50 GB | 100 GB |
-| OS | Ubuntu 24.04 LTS | Ubuntu 24.04 LTS |
+| Resource | Without ClamAV | **With ClamAV (default)** |
+|----------|---------------|--------------------------|
+| CPU | 2 vCPU | **2 vCPU** |
+| RAM | 4 GB (t3.medium) | **8 GB (t3.large)** |
+| Disk | 50 GB | **100 GB** |
 
-Disk usage grows with the number of clients and volume of DMARC reports. Monitor with `df -h /` and expand the volume before it reaches 80% capacity.
+ClamAV loads 700 MB–1 GB of virus signatures into RAM at startup. The Terraform configuration auto-selects `t3.large` when `clamav_enabled = true`.
 
 ---
 
-## System Preparation
+## Provision Infrastructure with Terraform
 
-Update the system and install required packages:
+The Terraform configuration in `terraform/aws/` provisions all required AWS infrastructure using the naming convention `{project}-{environment}-{resource}` (e.g. `dmarc-prod-vpc`).
+
+### Resources created
+
+| Resource | Name |
+|---|---|
+| VPC | `dmarc-prod-vpc` |
+| Internet Gateway | `dmarc-prod-igw` |
+| Public Subnet | `dmarc-prod-public-subnet` |
+| Route Table | `dmarc-prod-public-rt` |
+| Security Group | `dmarc-prod-app-sg` |
+| EC2 Instance | `dmarc-prod-app-ec2` |
+| Elastic IP | `dmarc-prod-eip` |
+| Key Pair | `dmarc-prod-keypair` |
+| ECR Repository (API) | `dmarc-prod-api` |
+| ECR Repository (Frontend) | `dmarc-prod-frontend` |
+| IAM Role | `dmarc-prod-ec2-role` |
+| IAM Instance Profile | `dmarc-prod-ec2-profile` |
+
+### Security group rules
+
+| Port | Protocol | Source | Purpose |
+|------|----------|--------|---------|
+| 443 | TCP | `0.0.0.0/0` | HTTPS |
+| 80 | TCP | `0.0.0.0/0` | HTTP (ACME + redirect) |
+| 22 | TCP | `admin_cidr` | SSH (your IP only) |
+| 22 | TCP | `cicd_cidr` | SSH for CI/CD (optional) |
+
+### Deploy
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git ufw nginx python3-certbot-nginx
+cd terraform/aws
+cp terraform.tfvars.example terraform.tfvars
 ```
 
-Create a dedicated non-root user to own the application files. This user will run all Docker commands:
+Edit `terraform.tfvars` — at minimum set:
+- `admin_cidr` — your current public IP as `x.x.x.x/32`  
+  *(find it: `curl -s https://checkip.amazonaws.com`)*
+- `ssh_public_key_path` — path to your `.pub` file (default `~/.ssh/id_rsa.pub`)
+
+Then:
 
 ```bash
-sudo useradd -m -s /bin/bash dmarc
-sudo usermod -aG sudo dmarc
+terraform init
+terraform plan
+terraform apply
 ```
 
-Switch to the new user for all remaining steps:
+After `apply` completes, note these outputs — you will need them shortly:
 
 ```bash
-sudo su - dmarc
+terraform output public_ip          # Point your DNS A record here
+terraform output instance_id        # Store as GitHub secret EC2_INSTANCE_ID
+terraform output ecr_registry_url   # Store as GitHub secret ECR_REGISTRY
+terraform output ecr_api_repo       # Store as GitHub secret ECR_API_REPO
+terraform output ecr_frontend_repo  # Store as GitHub secret ECR_FRONTEND_REPO
 ```
+
+### CI/CD IAM credentials
+
+The EC2 instance IAM profile allows it to pull from ECR without credentials. For the GitHub Actions *build and push* step you need a separate IAM user or OIDC role with ECR push access.
+
+**Option A — Dedicated IAM user (simpler)**
+
+Set `create_ci_user = true` in `terraform.tfvars` and re-run `terraform apply`. Retrieve the credentials:
+
+```bash
+terraform output ci_user_access_key_id
+terraform output -raw ci_user_secret_access_key
+```
+
+Store these as GitHub secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+
+**Option B — GitHub Actions OIDC (recommended — no long-lived secrets)**
+
+Follow the GitHub documentation to configure OIDC for AWS:
+https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+
+Update `.github/workflows/deploy.yml` to use `role-to-assume` instead of access key secrets.
 
 ---
 
-## Install Docker and Docker Compose
+## Configure GitHub Actions CI/CD
 
-Use the official Docker installation script (this installs Docker Engine and the Compose plugin):
+In your GitHub repository go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret name | Value |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | From Terraform output or OIDC role |
+| `AWS_SECRET_ACCESS_KEY` | From Terraform output or OIDC role |
+| `ECR_REGISTRY` | From `terraform output ecr_registry_url` |
+| `ECR_API_REPO` | From `terraform output ecr_api_repo` |
+| `ECR_FRONTEND_REPO` | From `terraform output ecr_frontend_repo` |
+| `EC2_INSTANCE_ID` | From `terraform output instance_id` |
+
+The workflow (`.github/workflows/deploy.yml`) runs on every push to `main`:
+
+1. **Test** — builds the API image and runs the full pytest suite
+2. **Build & Push** — builds API and frontend images, tags with the 8-char git SHA, pushes to ECR
+3. **Deploy** — uses AWS SSM to run the deployment commands on the EC2 instance (no SSH port needs to be open to GitHub runner IPs)
+
+> **SSM deployment:** The EC2 IAM role includes `AmazonSSMManagedInstanceCore`. GitHub Actions uses `aws ssm send-command` to trigger a deployment on the instance and waits for completion. The full deployment log appears in the Actions run.
+
+---
+
+## First-Time Server Setup
+
+SSH into the server using the key pair you provided:
 
 ```bash
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
+ssh -i ~/.ssh/id_rsa ubuntu@$(terraform -chdir=terraform/aws output -raw public_ip)
 ```
 
-> **Important:** Log out and back in (or run `newgrp docker`) for the group membership to take effect. Verify:
+Docker was installed by the EC2 `user_data` script. Verify it is running:
 
 ```bash
 docker --version
 docker compose version
 ```
 
-Expected output (versions may differ):
-```
-Docker version 27.x.x, build ...
-Docker Compose version v2.x.x
-```
-
----
-
-## Firewall Configuration
-
-Configure ufw to allow only SSH and web traffic:
+Create the application directory and copy the required files from the repository:
 
 ```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow ssh
-sudo ufw allow 'Nginx Full'
-sudo ufw enable
+sudo mkdir -p /opt/dmarc/geoip
+sudo chown ubuntu:ubuntu /opt/dmarc
 ```
 
-Verify:
+Copy from your local machine (or clone the repo on the server for the config files only):
 
 ```bash
-sudo ufw status
+# From your local machine:
+scp -i ~/.ssh/id_rsa \
+  docker-compose.prod.yml \
+  docker-compose.bootstrap.yml \
+  .env.prod.example \
+  ubuntu@<public_ip>:/opt/dmarc/
+
+scp -i ~/.ssh/id_rsa \
+  docker/nginx.prod.conf \
+  docker/nginx.bootstrap.conf \
+  ubuntu@<public_ip>:/opt/dmarc/docker/
 ```
 
-Expected output:
-```
-Status: active
-
-To                         Action      From
---                         ------      ----
-OpenSSH                    ALLOW       Anywhere
-Nginx Full                 ALLOW       Anywhere
-```
-
-> **Do not** add rules for port 8000 (API) or 5432 (PostgreSQL). These ports must remain inaccessible from the internet.
-
----
-
-## Clone the Application
-
-Create the application directory and clone the repository:
+Or clone the full repository and work from `/opt/dmarc`:
 
 ```bash
-sudo mkdir -p /opt/dmarc
-sudo chown dmarc:dmarc /opt/dmarc
-git clone <repository-url> /opt/dmarc/app
-cd /opt/dmarc/app
-```
-
-Replace `<repository-url>` with your actual repository URL.
-
-Create the data directories referenced by Docker Compose:
-
-```bash
-mkdir -p /opt/dmarc/app/geoip
-mkdir -p /opt/dmarc/backups
+git clone <repository-url> /opt/dmarc
+cd /opt/dmarc
 ```
 
 ---
 
 ## Configure the Environment
 
-Copy the example environment file and edit it:
-
 ```bash
-cd /opt/dmarc/app
-cp .env.docker.example .env.docker
-nano .env.docker
+cd /opt/dmarc
+cp .env.prod.example .env.prod
+nano .env.prod
 ```
 
 ### Required values
 
-**1. Generate `SECRET_KEY`**
-
-This key signs all JWT tokens. Any long random string works — generate one:
-
+**1. `SECRET_KEY`** — signs all JWT tokens:
 ```bash
 openssl rand -hex 32
 ```
 
-Paste the output as the value of `SECRET_KEY`.
+**2. `POSTGRES_PASSWORD`** — strong database password:
+```bash
+openssl rand -hex 24
+```
+Set the same value in both `POSTGRES_PASSWORD` and the password segment of `DATABASE_URL`.
 
-**2. Generate `ENCRYPTION_KEY`**
-
-This key encrypts IMAP passwords stored in the database. It must be a Fernet-format key (32 URL-safe base64 bytes):
-
+**3. `ENCRYPTION_KEY`** — encrypts stored IMAP credentials:
 ```bash
 docker run --rm python:3.13-slim python -c \
   "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Paste the output as the value of `ENCRYPTION_KEY`.
+**4. `ADMIN_EMAIL` and `ADMIN_PASSWORD`** — credentials for the initial super\_admin account.
 
-> **Keep both keys safe.** Loss of `ENCRYPTION_KEY` means stored IMAP credentials cannot be decrypted. Back these keys up securely (e.g. a password manager). Never commit `.env.docker` to version control.
-
-**3. Set `ADMIN_PASSWORD`**
-
-Set a strong initial password for the super\_admin account. You will be prompted to change it on first login.
-
-**4. Set `CORS_ORIGINS`**
-
-Change to your public domain:
-
+**5. `CORS_ORIGINS`** — set to your public HTTPS domain:
 ```
 CORS_ORIGINS=https://dmarc.example.com
 ```
 
-**5. Set `AZURE_REDIRECT_URI` (if using Azure SSO)**
-
+**6. `AZURE_REDIRECT_URI`** (if using Azure SSO):
 ```
 AZURE_REDIRECT_URI=https://dmarc.example.com/auth/callback
 ```
 
-**6. Set `MFA_REQUIRED` (optional)**
-
-Set to `true` to require all local accounts to enrol in TOTP MFA before accessing the platform. super\_admin accounts always require MFA regardless of this setting.
-
-```
-MFA_REQUIRED=false
-```
-
-### Final `.env.docker` checklist
-
-Before continuing, confirm these values are set:
-
-- [ ] `SECRET_KEY` — non-empty
-- [ ] `ENCRYPTION_KEY` — non-empty, Fernet format
-- [ ] `ADMIN_EMAIL` — your super\_admin email address
-- [ ] `ADMIN_PASSWORD` — a strong password
-- [ ] `CORS_ORIGINS` — your public HTTPS domain
-- [ ] `MFA_REQUIRED` — set to `true` if you want to enforce MFA for all users from day one (recommended for production)
+> **Keep `.env.prod` secure.** It is gitignored and must never be committed. Back up `SECRET_KEY` and `ENCRYPTION_KEY` in a password manager — loss of `ENCRYPTION_KEY` means stored IMAP credentials cannot be decrypted.
 
 ---
 
 ## GeoIP Database
 
-The GeoIP database enables country, city, and region enrichment on DMARC records and powers the world map visualisation. Without it, the platform starts normally but geo-anomaly flagging and location data are disabled.
+GeoIP enrichment enables country/city data on DMARC records and powers geo-anomaly detection.
 
 1. Sign up at https://www.maxmind.com/en/geolite2/signup
-2. Download **GeoLite2-City.mmdb** (provides country, city, region, and coordinates)
-3. Upload the file to your server:
+2. Download **GeoLite2-City.mmdb**
+3. Place it on the server:
 
 ```bash
-scp GeoLite2-City.mmdb dmarc@your-server:/opt/dmarc/app/geoip/
+# From your local machine:
+scp -i ~/.ssh/id_rsa GeoLite2-City.mmdb ubuntu@<public_ip>:/opt/dmarc/geoip/
 ```
 
-Or download directly on the server using the MaxMind download link from your account page.
-
-The GeoIP database is mounted read-only into the containers at `/app/geoip/`. It is separate from `docker-data/` and survives all reset operations.
-
-**Keeping GeoIP up to date:** MaxMind updates GeoLite2 databases weekly. Set up a monthly cron job or use the MaxMind GeoIP Update tool (`geoipupdate`) to keep the database current.
+The platform starts normally without the GeoIP database — geo enrichment and geo-anomaly flags are silently disabled.
 
 ---
 
-## ClamAV Antivirus Scanning (Optional)
+## SSL Certificate with Certbot (Docker)
 
-ClamAV scanning is disabled by default. When enabled, every ingested DMARC report file — whether dropped via the filesystem or received via IMAP — is scanned by the ClamAV daemon (`clamd`) before decompression. Infected files are rejected with a `[SECURITY] MALWARE DETECTED` log entry and never written to the database.
+Certbot runs as a Docker container (`dmarc-prod-certbot`) that shares a volume with the nginx frontend container. This section walks through the one-time bootstrap to obtain the initial certificate.
 
-This feature is recommended for deployments that receive reports from a broad range of external senders or operate under a security compliance requirement (SOC 2, ISO 27001, etc.).
+### How it works
 
-### 1. Install ClamAV
+```
+certbot container                   nginx (frontend) container
+     │                                       │
+     │  writes challenge file                │
+     ├──────────────────────────────────────▶│ certbot-webroot volume
+     │                                       │  /var/www/certbot/.well-known/
+     │                                       │
+     │  Let's Encrypt reads the file via     │
+     │  HTTP from your domain ──────────────▶│ nginx serves it on port 80
+     │                                       │
+     │  certificate issued ──────────────────▶ certbot-certs volume
+     │                                          /etc/letsencrypt/live/DOMAIN/
+     │
+     │  nginx reads certificate from volume on each reload
+```
+
+### Step 1 — Point DNS to the Elastic IP
+
+Create an A record for your domain pointing to the Elastic IP from Terraform output. Wait for DNS propagation before continuing (test with `dig +short your-domain.com`).
+
+### Step 2 — Substitute your domain in the nginx config
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y clamav clamav-daemon
+cd /opt/dmarc
+sed -i 's/DOMAIN_PLACEHOLDER/dmarc.example.com/g' docker/nginx.prod.conf
 ```
 
-### 2. Download the virus database (one-time)
+Verify the substitution:
+```bash
+grep "ssl_certificate" docker/nginx.prod.conf
+# Should show: /etc/letsencrypt/live/dmarc.example.com/fullchain.pem
+```
+
+### Step 3 — Authenticate to ECR and pull images
 
 ```bash
-sudo systemctl stop clamav-freshclam
-sudo freshclam
-sudo systemctl start clamav-freshclam
+export ECR_REGISTRY="<registry_url_from_terraform>"
+export ECR_API_REPO="dmarc-prod-api"
+export ECR_FRONTEND_REPO="dmarc-prod-frontend"
+export IMAGE_TAG="latest"
+
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 ```
 
-This downloads ~300 MB of signature data. Allow 2–5 minutes.
+> **Note:** Images are not available in ECR until the first GitHub Actions push to `main` completes. Trigger it by pushing a commit (or run the workflow manually in the GitHub Actions UI).
 
-### 3. Configure clamd to listen on TCP
+### Step 4 — Start the stack with the bootstrap nginx config
 
-Edit `/etc/clamav/clamd.conf` and add or uncomment:
-
-```
-TCPSocket 3310
-TCPAddr 127.0.0.1
-```
-
-Then restart the daemon:
+The bootstrap config serves HTTP only — required because the SSL certificate doesn't exist yet.
 
 ```bash
-sudo systemctl restart clamav-daemon
-sudo systemctl enable clamav-daemon
+docker compose -f docker-compose.prod.yml -f docker-compose.bootstrap.yml up -d
 ```
 
-Verify clamd is accepting connections:
+Verify the frontend is reachable over HTTP:
+```bash
+curl -I http://dmarc.example.com
+# Should return HTTP 200
+```
+
+### Step 5 — Obtain the initial certificate
 
 ```bash
-echo PING | nc 127.0.0.1 3310
-# Expected output: PONG
+docker compose -f docker-compose.prod.yml run --rm certbot \
+  certonly --webroot -w /var/www/certbot \
+  --domain dmarc.example.com \
+  --email your@email.com \
+  --agree-tos --no-eff-email
 ```
 
-### 4. Enable scanning in .env.docker
+Expected output:
+```
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Account registered.
+Requesting a certificate for dmarc.example.com
+Successfully received certificate.
+Certificate is saved at: /etc/letsencrypt/live/dmarc.example.com/fullchain.pem
+...
+```
+
+### Step 6 — Switch to the production HTTPS config
+
+Restart the frontend container — it now mounts `nginx.prod.conf` (from `docker-compose.prod.yml`) and can load the certificate from the shared volume:
 
 ```bash
-CLAMAV_ENABLED=true
-CLAMAV_HOST=127.0.0.1   # or "clamav" if using the Docker Compose service
-CLAMAV_PORT=3310
-CLAMAV_FAIL_OPEN=false  # recommended: reject file if clamd is unreachable
+docker compose -f docker-compose.prod.yml up -d --force-recreate frontend
 ```
 
-### 5. Docker Compose deployment
-
-For Docker-based deployments, an optional ClamAV service is provided as commented-out blocks in `docker-compose.yml`. To enable it:
-
-1. Uncomment the `clamav` service and `clamav-data` volume in `docker-compose.yml`
-2. Set `CLAMAV_HOST=clamav` in `.env.docker` (the Docker service name)
-3. Set `CLAMAV_ENABLED=true` in `.env.docker`
-4. Rebuild and start:
-
+Verify HTTPS:
 ```bash
-docker compose --env-file .env.docker up --build -d
+curl -I https://dmarc.example.com
+# Should return HTTP 200 with TLS details
 ```
 
-> **First-boot note:** freshclam must download the virus database (~300 MB) before clamd starts accepting connections. The `start_period: 300s` healthcheck gives it time. API and watcher containers wait for clamd to be healthy before starting.
-
-### 6. CLAMAV_FAIL_OPEN — fail closed vs fail open
-
-| Setting | Behaviour when clamd is unreachable | Use when |
-|---------|-------------------------------------|----------|
-| `CLAMAV_FAIL_OPEN=false` (default) | File is **rejected** — `[SECURITY]` ERROR logged | Compliance/regulated environments — security over availability |
-| `CLAMAV_FAIL_OPEN=true` | File is **allowed through** — `[SECURITY]` WARNING logged | Report continuity is more important than blocking during clamd downtime |
-
-### 7. Keeping signatures up to date
-
-`freshclam` should run daily. On Ubuntu with the default package install this is handled automatically by the `clamav-freshclam` service. Verify:
-
+Test the HTTP → HTTPS redirect:
 ```bash
-sudo systemctl status clamav-freshclam
+curl -I http://dmarc.example.com
+# Should return HTTP 301 → https://dmarc.example.com
 ```
-
-In Docker, the official `clamav/clamav:stable` image runs freshclam automatically. The `clamav-data` volume persists the database between container restarts so it is not re-downloaded on each start.
 
 ---
 
-## First Start
+## First Deployment
 
-Start the full stack:
+If CI/CD is already configured and has built the images, trigger the full stack:
 
 ```bash
-cd /opt/dmarc/app
-docker compose --env-file .env.docker up --build -d
+cd /opt/dmarc
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-The `--build` flag builds all images on first run. Subsequent starts do not need `--build` unless the code has changed.
-
-Monitor the API startup to confirm migrations and seeding complete successfully:
+Monitor API startup to confirm migrations and seeding complete:
 
 ```bash
-docker compose logs api -f --tail 50
+docker compose -f docker-compose.prod.yml logs dmarc-prod-api -f --tail 50
 ```
 
 Expected output sequence:
@@ -394,172 +429,41 @@ api-1  | ==> Running Alembic migrations...
 api-1  | INFO  [alembic.runtime.migration] Running upgrade ...
 api-1  | ==> Seeding initial data...
 api-1  |   Created super_admin: admin@example.com
-api-1  |   Created test client: test-client
 api-1  | ==> Starting API server on :8000...
 api-1  | INFO:     Application startup complete.
 ```
 
-Press `Ctrl+C` to stop following the logs. The containers continue running.
-
-Verify all containers are healthy:
-
+Check all containers are healthy:
 ```bash
-docker compose ps
+docker compose -f docker-compose.prod.yml ps
 ```
 
-All services should show `healthy` or `running`. If `api` shows `unhealthy`, check the logs.
-
-Test the API directly:
-
-```bash
-curl http://localhost:8000/health
-```
-
-Expected response:
-```json
-{"status": "ok", "version": "0.2.0"}
-```
+> **ClamAV first boot:** The `dmarc-prod-clamav` container downloads ~300 MB of virus signatures on first start. It shows `starting` until download completes (2–5 minutes). The API and watcher start regardless and operate in fail-closed mode until clamd is ready.
 
 ---
 
-## Nginx Reverse Proxy
+## Initial Application Setup via CLI
 
-Create the nginx site configuration:
+The seed script creates one super\_admin and (optionally) a test client on first boot. Use the CLI for all subsequent setup.
 
-```bash
-sudo nano /etc/nginx/sites-available/dmarc
-```
+> **First login — MFA required:** The super\_admin account always requires TOTP MFA. On first login you are redirected to the MFA setup page. Scan the QR code with Microsoft Authenticator, Authy, or Google Authenticator, enter the 6-digit confirmation code, and click **Enable MFA**.
 
-Paste the following (replace `dmarc.example.com` with your domain):
-
-```nginx
-server {
-    listen 80;
-    server_name dmarc.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:5010;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Increase timeouts for large report uploads
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-}
-```
-
-Enable the site and verify the configuration:
+CLI commands run inside the API container:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/dmarc /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-```
-
-Expected: `nginx: configuration file /etc/nginx/nginx.conf test is successful`
-
-Reload nginx:
-
-```bash
-sudo systemctl reload nginx
-```
-
-Test that the site is reachable over HTTP before proceeding to SSL:
-
-```bash
-curl -I http://dmarc.example.com
-```
-
-You should receive an HTTP response (200 or 302).
-
----
-
-## SSL Certificate
-
-Obtain a certificate from Let's Encrypt. Certbot will modify the nginx configuration to add SSL and set up automatic HTTP → HTTPS redirection:
-
-```bash
-sudo certbot --nginx -d dmarc.example.com
-```
-
-Follow the prompts (agree to terms, enter an email for expiry notifications). Certbot will:
-1. Validate domain ownership via HTTP (port 80 must be open)
-2. Obtain the certificate
-3. Modify `/etc/nginx/sites-available/dmarc` to add SSL configuration
-4. Reload nginx
-
-Verify HTTPS is working:
-
-```bash
-curl -I https://dmarc.example.com
-```
-
-Verify automatic renewal is configured:
-
-```bash
-sudo systemctl status certbot.timer
-sudo certbot renew --dry-run
-```
-
-The dry run should succeed without errors. Certbot renews certificates automatically when they have less than 30 days remaining.
-
----
-
-## Initial Setup via CLI
-
-The seed script creates one super\_admin and one test client on first boot. Use the CLI to set up your actual clients and users.
-
-> **First login — MFA enrolment required:** The super\_admin account always requires MFA. When you sign in for the first time you will be redirected to the MFA setup page before you can access any other page. Open your authenticator app (Microsoft Authenticator, Authy, or Google Authenticator), scan the QR code, enter the 6-digit confirmation code, and click **Enable MFA**. Subsequent logins will ask for the code after your password.
-
-All CLI commands are run inside the `api` container:
-
-```bash
-docker compose --env-file .env.docker exec api python -m cli.manage <command>
+docker compose -f docker-compose.prod.yml exec dmarc-prod-api \
+  python -m cli.manage <command>
 ```
 
 ### MSP setup example
 
 ```bash
-# Create a client for each customer
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-client acme-corp "Acme Corporation"
+EXEC="docker compose -f docker-compose.prod.yml exec dmarc-prod-api python -m cli.manage"
 
-# Add the customer's sending domain
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-domain acme-corp mail.acme-corp.com
-
-# Create a viewer account for the customer's stakeholder
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-user stakeholder@acme-corp.com user --client acme-corp --client-role viewer
-
-# Create an admin account for your team member managing this client
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-user engineer@yourcompany.com user --client acme-corp --client-role admin
-```
-
-### Single-tenant setup example
-
-```bash
-# Create the company client
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-client my-company "My Company Ltd"
-
-# Add the primary sending domain
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-domain my-company mail.mycompany.com
-
-# Create an admin for the IT team
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-user it-admin@mycompany.com user --client my-company --client-role admin
-
-# Create a viewer for a junior team member
-docker compose --env-file .env.docker exec api python -m cli.manage \
-  create-user junior@mycompany.com user --client my-company --client-role viewer
+$EXEC create-client acme-corp "Acme Corporation"
+$EXEC create-domain acme-corp mail.acme-corp.com
+$EXEC create-user stakeholder@acme-corp.com user --client acme-corp --client-role viewer
+$EXEC create-user engineer@yourcompany.com user --client acme-corp --client-role admin
 ```
 
 ### Full CLI reference
@@ -570,140 +474,114 @@ docker compose --env-file .env.docker exec api python -m cli.manage \
 | `create-domain <slug> <domain>` | Add a domain to a client |
 | `create-user <email> <role> [--client <slug>] [--client-role admin\|viewer]` | Create a user |
 | `set-role <email> <role>` | Change global role (`super_admin` or `user`) |
-| `assign-client <email> <slug> [--role admin\|viewer]` | Add a client assignment to an existing user |
+| `assign-client <email> <slug> [--role admin\|viewer]` | Add a client assignment |
 | `set-client-role <email> <slug> <role>` | Change per-client role |
 | `revoke-client <email> <slug>` | Remove a client assignment |
 | `reset-password <email> [--temporary]` | Set a new password |
 | `list-clients` | List all clients |
 | `scan <slug>` | Manually process all files in the client's incoming folder |
-| `enrich-geo <slug> [--force]` | Backfill geolocation data on existing records |
-| `export-client <slug> [--output <path>]` | Export all client data to a ZIP file (JSON/CSV) |
+| `enrich-geo <slug> [--force]` | Backfill geolocation data |
+| `export-client <slug> [--output <path>]` | Export client data to ZIP |
 | `purge-client <slug> [--yes]` | Permanently delete all data for a client |
+
+---
+
+## Automated Certificate Renewal
+
+The `dmarc-prod-certbot` container runs `certbot renew` every 12 hours. Certbot automatically renews any certificate with fewer than 30 days remaining.
+
+After renewal, nginx must be reloaded to pick up the new certificate. Add a cron entry to handle this:
+
+```bash
+crontab -e
+```
+
+Add:
+```cron
+0 3 * * * docker exec dmarc-prod-frontend nginx -s reload >> /var/log/nginx-reload.log 2>&1
+```
+
+This reloads nginx daily at 03:00. Because certbot only renews when expiry is within 30 days, the reload is a no-op 29 days out of 30.
+
+Verify the renewal path manually with a dry run:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm certbot \
+  renew --webroot -w /var/www/certbot --dry-run
+```
+
+Expected output:
+```
+Simulating renewal of an existing certificate for dmarc.example.com
+Congratulations, all simulated renewals succeeded.
+```
 
 ---
 
 ## Automated Backups
 
-Set up a daily PostgreSQL backup using a systemd timer.
-
 ### Backup script
 
-Create the script at `/opt/dmarc/backup.sh`:
+Create `/opt/dmarc/backup.sh`:
 
 ```bash
-sudo nano /opt/dmarc/backup.sh
+nano /opt/dmarc/backup.sh
 ```
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-APP_DIR="/opt/dmarc/app"
+APP_DIR="/opt/dmarc"
 BACKUP_DIR="/opt/dmarc/backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RETAIN_DAYS=30
 
 mkdir -p "$BACKUP_DIR"
 
-docker compose -f "$APP_DIR/docker-compose.yml" \
-    --env-file "$APP_DIR/.env.docker" \
-    exec -T db pg_dump -U dmarc dmarc \
-    | gzip > "$BACKUP_DIR/dmarc_${TIMESTAMP}.sql.gz"
+docker compose -f "$APP_DIR/docker-compose.prod.yml" \
+  exec -T dmarc-prod-db pg_dump -U dmarc dmarc \
+  | gzip > "$BACKUP_DIR/dmarc_${TIMESTAMP}.sql.gz"
 
-# Remove backups older than RETAIN_DAYS days
 find "$BACKUP_DIR" -name "dmarc_*.sql.gz" -mtime +"$RETAIN_DAYS" -delete
 
 echo "Backup complete: $BACKUP_DIR/dmarc_${TIMESTAMP}.sql.gz"
 ```
 
-Make it executable:
+```bash
+chmod +x /opt/dmarc/backup.sh
+```
+
+### Schedule with cron
 
 ```bash
-sudo chmod +x /opt/dmarc/backup.sh
-sudo chown dmarc:dmarc /opt/dmarc/backup.sh
+crontab -e
 ```
 
-### systemd service
-
-Create `/etc/systemd/system/dmarc-backup.service`:
-
-```bash
-sudo nano /etc/systemd/system/dmarc-backup.service
-```
-
-```ini
-[Unit]
-Description=DMARC Platform Database Backup
-Wants=dmarc-backup.timer
-
-[Service]
-Type=oneshot
-User=dmarc
-ExecStart=/opt/dmarc/backup.sh
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### systemd timer
-
-Create `/etc/systemd/system/dmarc-backup.timer`:
-
-```bash
-sudo nano /etc/systemd/system/dmarc-backup.timer
-```
-
-```ini
-[Unit]
-Description=Run DMARC database backup daily at 03:00
-Requires=dmarc-backup.service
-
-[Timer]
-OnCalendar=*-*-* 03:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-### Enable and verify
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now dmarc-backup.timer
-sudo systemctl list-timers dmarc-backup.timer
-```
-
-Test a manual backup immediately:
-
-```bash
-sudo systemctl start dmarc-backup.service
-journalctl -u dmarc-backup.service -n 20
-ls -lh /opt/dmarc/backups/
+```cron
+0 3 * * * /opt/dmarc/backup.sh >> /var/log/dmarc-backup.log 2>&1
+0 3 * * * docker exec dmarc-prod-frontend nginx -s reload >> /var/log/nginx-reload.log 2>&1
 ```
 
 ### Restore procedure
 
 ```bash
-# 1. Stop the application (keep the database running)
-cd /opt/dmarc/app
-docker compose --env-file .env.docker stop api watcher frontend
+cd /opt/dmarc
 
-# 2. Drop and recreate the public schema
-docker compose --env-file .env.docker exec -T db \
+# Stop application containers (keep db running)
+docker compose -f docker-compose.prod.yml stop api watcher frontend
+
+# Drop and recreate schema
+docker compose -f docker-compose.prod.yml exec -T dmarc-prod-db \
   psql -U dmarc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
-# 3. Restore from backup
-gunzip -c /opt/dmarc/backups/dmarc_YYYYMMDD_HHMMSS.sql.gz | \
-  docker compose --env-file .env.docker exec -T db psql -U dmarc dmarc
+# Restore from backup
+gunzip -c /opt/dmarc/backups/dmarc_YYYYMMDD_HHMMSS.sql.gz \
+  | docker compose -f docker-compose.prod.yml exec -T dmarc-prod-db psql -U dmarc dmarc
 
-# 4. Restart the application
-docker compose --env-file .env.docker up -d
+# Restart
+docker compose -f docker-compose.prod.yml up -d
 ```
-
-> **Off-site backup:** Copy backup files to a remote location (S3, another server, etc.) using `rclone` or `rsync`. A local-only backup does not protect against server loss.
 
 ---
 
@@ -712,204 +590,164 @@ docker compose --env-file .env.docker up -d
 ### Viewing logs
 
 ```bash
-# API logs (migrations, requests, errors)
-docker compose logs api -f --tail 100
-
-# File watcher and IMAP poller logs
-docker compose logs watcher -f --tail 100
-
 # All containers
-docker compose logs -f
+docker compose -f docker-compose.prod.yml logs -f
+
+# Specific container
+docker compose -f docker-compose.prod.yml logs dmarc-prod-api -f --tail 100
+docker compose -f docker-compose.prod.yml logs dmarc-prod-watcher -f --tail 100
+docker compose -f docker-compose.prod.yml logs dmarc-prod-clamav --tail 50
 ```
 
-### Checking container status
+### Container status
 
 ```bash
-docker compose ps
+docker compose -f docker-compose.prod.yml ps
 ```
 
 ### Restarting a container
 
 ```bash
-docker compose restart api
-docker compose restart watcher
+docker compose -f docker-compose.prod.yml restart dmarc-prod-api
 ```
 
 ### Dropping a DMARC report manually
 
-Place `.xml.gz` or `.zip` DMARC report files in the client's incoming folder:
-
 ```bash
-cp report.xml.gz /opt/dmarc/app/docker-data/reports/incoming/acme-corp/
+# Named Docker volume — find the mount point
+docker volume inspect dmarc-prod_app-data
+
+# Copy report to the incoming directory inside the volume
+docker cp report.xml.gz dmarc-prod-watcher:/app/data/reports/incoming/acme-corp/
 ```
 
-The watcher container picks it up within seconds.
-
-### Running CLI commands
+### Disk usage
 
 ```bash
-docker compose --env-file .env.docker exec api python -m cli.manage <command>
-```
-
-### Stopping and starting the stack
-
-```bash
-# Stop (data persists in docker-data/)
-docker compose down
-
-# Start again
-docker compose --env-file .env.docker up -d
-```
-
-### Monitoring disk usage
-
-```bash
-# Overall disk
 df -h /
-
-# Docker-specific usage
 docker system df
-
-# Application data
-du -sh /opt/dmarc/app/docker-data/
-du -sh /opt/dmarc/backups/
+docker volume ls
 ```
 
 ---
 
 ## Updating the Application
 
-```bash
-cd /opt/dmarc/app
-
-# Pull the latest code
-git pull
-
-# Rebuild and restart — migrations run automatically on startup
-docker compose --env-file .env.docker up --build -d
-```
-
-Watch the API logs to confirm migrations completed:
+All application updates flow through GitHub Actions:
 
 ```bash
-docker compose logs api --tail 30
+git commit -m "your change"
+git push origin main
 ```
 
-To rebuild only the frontend (e.g. after a UI-only change):
+GitHub Actions will:
+1. Run the test suite
+2. Build new images tagged with the commit SHA
+3. Push to ECR
+4. Use SSM to pull and restart the application containers on EC2
+
+Watch progress in the **Actions** tab of your repository.
+
+### Manual update (if CI/CD is unavailable)
 
 ```bash
-docker compose --env-file .env.docker up --build -d frontend
-```
+cd /opt/dmarc
 
-> **Always take a backup before updating** if the update includes database migrations.
+# Set environment from the tag you want to deploy
+export ECR_REGISTRY="<registry>"
+export ECR_API_REPO="dmarc-prod-api"
+export ECR_FRONTEND_REPO="dmarc-prod-frontend"
+export IMAGE_TAG="<sha-or-tag>"
+
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker compose -f docker-compose.prod.yml pull api watcher frontend
+docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend
+```
 
 ---
 
 ## Troubleshooting
 
+### SSL certificate issues
+
+**nginx fails to start after certbot bootstrap:**
+```bash
+docker compose -f docker-compose.prod.yml logs dmarc-prod-frontend --tail 20
+```
+Confirm the domain in `docker/nginx.prod.conf` exactly matches the domain in the certificate (`/etc/letsencrypt/live/<domain>/`). Re-run the `sed` substitution if needed.
+
+**Certbot cannot reach the ACME server:**
+Verify port 80 is open in the AWS security group and not blocked by ufw (`sudo ufw status`).
+
+**Dry-run renewal fails:**
+```bash
+docker compose -f docker-compose.prod.yml logs dmarc-prod-certbot --tail 30
+```
+Confirm the `certbot-webroot` volume is mounted in both the certbot and frontend containers.
+
+**Certificate shows old after renewal:**
+```bash
+docker exec dmarc-prod-frontend nginx -s reload
+```
+The daily cron handles this automatically, but you can force a reload immediately.
+
 ### Container fails to start
 
 ```bash
-docker compose logs api --tail 50
+docker compose -f docker-compose.prod.yml logs dmarc-prod-api --tail 50
 ```
 
 Common causes:
-- Missing or invalid `SECRET_KEY` or `ENCRYPTION_KEY` — check `.env.docker`
-- Database connection failure — verify `DATABASE_URL` credentials match `docker-compose.yml`
-- Port conflict — check no other process is using port 5010 (`sudo ss -tlnp | grep 5010`)
+- Missing or invalid `SECRET_KEY` or `ENCRYPTION_KEY` in `.env.prod`
+- `DATABASE_URL` password doesn't match `POSTGRES_PASSWORD`
+- ECR image not yet available (first pipeline run hasn't completed)
 
-### "Validation error" on startup
+### 502 Bad Gateway
 
-Pydantic settings failed to load. Check that `SECRET_KEY` and `ENCRYPTION_KEY` are both set and non-empty in `.env.docker`.
-
-### 502 Bad Gateway from nginx
-
-The API or frontend container is not yet healthy. Wait 30 seconds and retry. If it persists:
-
+The API container is not yet healthy. Wait 30 seconds and retry. If persistent:
 ```bash
-docker compose ps
-docker compose logs api --tail 20
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs dmarc-prod-api --tail 20
 ```
 
-### Can't reach the site at all
+### ECR pull fails on EC2
+
+The instance IAM profile should allow ECR read without credentials. Verify:
+```bash
+aws ecr describe-repositories --region us-east-1
+```
+If this fails, the instance profile may not be attached. Check the EC2 IAM role in the AWS console.
+
+### ClamAV not accepting connections
+
+On first start, ClamAV downloads ~300 MB of signatures. Allow 5 minutes, then:
+```bash
+docker compose -f docker-compose.prod.yml logs dmarc-prod-clamav --tail 30
+```
+Expected when ready: `clamd: pid=1: OK`
+
+### SSM deployment not completing
 
 ```bash
-sudo systemctl status nginx
-sudo ufw status
-curl http://localhost:5010  # test directly without nginx
+aws ssm list-command-invocations \
+  --instance-id <EC2_INSTANCE_ID> \
+  --details --query "CommandInvocations[0]"
 ```
 
-### Login appears to succeed but the page doesn't change
-
-The login request returned 200 OK, but the `/auth/me` call immediately after is returning 403. This means the access token contains `msr=True` (MFA setup required) and the middleware is blocking `/auth/me`.
-
-Check that the API was rebuilt after the latest code changes and that the middleware exempt paths in `api/main.py` match the actual FastAPI route paths (they should be `/auth/me`, not `/api/auth/me`):
-
+The SSM agent must be running on the instance:
 ```bash
-docker compose --env-file .env.docker up --build -d api
-docker compose logs api --tail 20
-```
-
-If the admin account doesn't have MFA enrolled yet, signing in will redirect to the MFA setup page — this is expected behaviour, not an error. Complete the enrolment to proceed.
-
-### MFA QR code not showing
-
-```bash
-docker compose logs api --tail 20
-```
-
-Look for `ModuleNotFoundError: No module named 'PIL'`. This means the image was built before `qrcode[pil]` was added to requirements. Rebuild:
-
-```bash
-docker compose --env-file .env.docker up --build -d api
+sudo systemctl status snap.amazon-ssm-agent.amazon-ssm-agent
 ```
 
 ### Reports not being processed
 
 ```bash
-docker compose logs watcher --tail 50
+docker compose -f docker-compose.prod.yml logs dmarc-prod-watcher --tail 50
 ```
 
-Verify the incoming directory exists and contains the report file:
-
+Verify the incoming directory exists inside the app-data volume and the client slug matches exactly:
 ```bash
-ls /opt/dmarc/app/docker-data/reports/incoming/acme-corp/
+docker exec dmarc-prod-watcher ls /app/data/reports/incoming/
 ```
-
-The client slug in the directory name must exactly match the slug in the database.
-
-### IMAP polling errors
-
-Check the last poll status in the web UI (Clients → Mail Ingestion tab). Check the watcher logs:
-
-```bash
-docker compose logs watcher --tail 30
-```
-
-Common causes: expired credentials, changed mailbox name, network firewall blocking outbound port 993.
-
-### Database full or slow
-
-```bash
-# Connect to the database
-docker compose --env-file .env.docker exec db psql -U dmarc dmarc
-
--- Check table sizes
-SELECT relname AS table,
-       pg_size_pretty(pg_total_relation_size(oid)) AS size
-FROM pg_class
-WHERE relkind = 'r'
-ORDER BY pg_total_relation_size(oid) DESC
-LIMIT 10;
-```
-
-The `records` and `auth_results` tables grow the fastest. Archive retention (default 7 days for report files) does not delete database records. Purging old records requires a manual database operation — contact your platform developer.
-
-### SSL certificate renewal failure
-
-```bash
-sudo certbot renew --dry-run
-sudo journalctl -u certbot -n 50
-```
-
-Ensure port 80 is open to the internet (`sudo ufw status`, check firewall at your cloud provider).

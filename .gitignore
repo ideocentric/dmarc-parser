@@ -91,6 +91,7 @@ docs/pdfs/                       # generated PDFs — run scripts/generate_pdfs.
 .env.*
 !.env.example
 !.env.docker.example
+!.env.prod.example
 *.pem
 *.key
 *.crt
@@ -199,3 +200,13 @@ $RECYCLE.BIN/
 # Docker
 # =============================================================================
 .docker/
+
+# =============================================================================
+# Terraform
+# =============================================================================
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfvars
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfplan

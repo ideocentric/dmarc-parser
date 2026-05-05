@@ -1,0 +1,154 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1   # Must match the region in terraform.tfvars
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
+#
+#   AWS_ACCESS_KEY_ID       — CI IAM user access key (from terraform output)
+#   AWS_SECRET_ACCESS_KEY   — CI IAM user secret key (from terraform output)
+#   ECR_REGISTRY            — e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com
+#   ECR_API_REPO            — e.g. dmarc-prod-api
+#   ECR_FRONTEND_REPO       — e.g. dmarc-prod-frontend
+#   EC2_INSTANCE_ID         — e.g. i-0abc1234def56789  (from terraform output instance_id)
+#
+# SSH secrets (only needed if not using SSM for deployment):
+#   EC2_HOST                — public IP (from terraform output public_ip)
+#   EC2_SSH_KEY             — contents of your private key file (~/.ssh/id_rsa)
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ── Test ────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test image
+        run: docker build -t dmarc-api-test .
+
+      - name: Run test suite
+        run: |
+          docker run --rm \
+            -e APP_ENV=testing \
+            dmarc-api-test \
+            pytest tests/ -x -q
+
+  # ── Build & Push ─────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    needs: test
+    runs-on: ubuntu-latest
+    # Only run on pushes to main — not on pull requests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tag from short commit SHA
+        id: tag
+        run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build and push API image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPO: ${{ secrets.ECR_API_REPO }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker build -t "$REGISTRY/$REPO:$TAG" -t "$REGISTRY/$REPO:latest" .
+          docker push "$REGISTRY/$REPO:$TAG"
+          docker push "$REGISTRY/$REPO:latest"
+
+      - name: Build and push frontend image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker build -t "$REGISTRY/$REPO:$TAG" -t "$REGISTRY/$REPO:latest" ./frontend
+          docker push "$REGISTRY/$REPO:$TAG"
+          docker push "$REGISTRY/$REPO:latest"
+
+  # ── Deploy ───────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Deployment via AWS SSM — no SSH port needs to be open to GitHub runner IPs.
+      # The EC2 IAM role (created by Terraform) already has AmazonSSMManagedInstanceCore.
+      - name: Deploy via SSM
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
+          ECR_API_REPO: ${{ secrets.ECR_API_REPO }}
+          ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${{ env.AWS_REGION }}" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[
+              \"set -euo pipefail\",
+              \"cd /opt/dmarc\",
+              \"aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY\",
+              \"export IMAGE_TAG=$IMAGE_TAG ECR_REGISTRY=$ECR_REGISTRY ECR_API_REPO=$ECR_API_REPO ECR_FRONTEND_REPO=$ECR_FRONTEND_REPO\",
+              \"docker compose -f docker-compose.prod.yml pull api watcher frontend\",
+              \"docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend\",
+              \"docker image prune -f --filter until=24h\"
+            ]" \
+            --output text --query "Command.CommandId")
+
+          echo "SSM Command ID: $COMMAND_ID"
+          echo "Waiting for deployment to complete..."
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+
+          # Print deployment output for the Actions log
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --query "StandardOutputContent" --output text
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+            --query "StatusDetails" --output text)
+
+          echo "Deployment status: $STATUS"
+          [ "$STATUS" = "Success" ] || exit 1
