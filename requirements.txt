@@ -24,7 +24,7 @@ msal>=1.28.0               # Azure SSO
 defusedxml>=0.7.1          # safe XML parsing — prevents entity expansion attacks
 watchdog>=4.0.0
 apscheduler>=3.10.0
-imapclient>=2.3.1          # IMAP mailbox polling
+imapclient>=3.1.0          # IMAP mailbox polling
 cryptography>=42.0.4       # Fernet encryption for stored credentials (42.0.0-42.0.3 had CVE-2024-26130)
 
 # Intelligence
