@@ -25,32 +25,28 @@ Multi-tenant DMARC aggregate report ingestion, analysis, and alerting system. Su
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  React Frontend (Vite + shadcn/ui)   :5173 dev / :5010 Docker│
-└────────────────────────┬────────────────────────────────────┘
-                         │ /api/*
-┌────────────────────────▼────────────────────────────────────┐
-│  FastAPI Backend (uvicorn)           :8000                   │
-│  · JWT + Azure SSO auth                                      │
-│  · Single PostgreSQL database, client_id scoped queries      │
-│  · APScheduler (IMAP polling, archive purge)                 │
-└──────────┬──────────────────────────────────────────────────┘
-           │
-┌──────────▼──────────┐    ┌──────────────────────────────────┐
-│  File Watcher        │    │  PostgreSQL  (single database)   │
-│  (watchdog)          │    │                                  │
-│  data/reports/       │    │  clients     users               │
-│  incoming/{client}/  │    │  domains     user_clients        │
-└──────────┬──────────┘    │  imap_configs                    │
-           │                │                                  │
-           │  .xml.gz / .zip│  reports  ──┐                   │
-┌──────────▼──────────────┐ │  records    │ all scoped by      │
-│  Ingestion Pipeline      │ │  flags      │ client_id          │
-│  extract → parse → dedup │ │  auth_results                   │
-│  → write → intelligence  │ │  processed_files                 │
-│  → archive               │ └──────────────────────────────────┘
-└──────────────────────────┘
+```mermaid
+flowchart TD
+    Browser(["Browser"])
+    Reports(["DMARC Reports\n.xml.gz / .zip"])
+
+    FE["React Frontend\nVite + shadcn/ui\n:5173 dev · :5010 Docker"]
+
+    API["FastAPI Backend\nuvicorn :8000\nJWT · Azure SSO · APScheduler"]
+
+    DB[("PostgreSQL — single database\nclient_id-scoped tables:\nclients · users · domains\nreports · records · flags\nauth_results · processed_files")]
+
+    subgraph ingestion["Ingestion Pipeline"]
+        W["File Watcher\nwatchdog\nincoming/{client}/"]
+        P["extract → parse → dedup\n→ write → intelligence → archive"]
+    end
+
+    Browser --> FE
+    FE -->|"/api/*"| API
+    API <--> DB
+    Reports --> W
+    W --> P
+    P --> DB
 ```
 
 **Multi-tenancy:** A single database holds all clients. Every DMARC data table (`reports`, `records`, `flags`, `processed_files`) carries a `client_id` column — all queries are automatically scoped to the authenticated user's permitted clients. Super-admins can query across all clients.
