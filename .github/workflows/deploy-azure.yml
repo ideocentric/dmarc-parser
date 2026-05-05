@@ -1,0 +1,142 @@
+name: CI/CD — Azure
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
+#
+#   AZURE_CLIENT_ID         — Service principal app ID (or OIDC client ID)
+#   AZURE_CLIENT_SECRET     — Service principal secret
+#   AZURE_TENANT_ID         — Azure Active Directory tenant ID
+#   AZURE_SUBSCRIPTION_ID   — Azure subscription ID
+#   ACR_LOGIN_SERVER        — e.g. dmarcprodacr.azurecr.io  (terraform output acr_login_server)
+#   AZURE_RESOURCE_GROUP    — e.g. dmarc-prod-rg             (terraform output resource_group_name)
+#   AZURE_VM_NAME           — e.g. dmarc-prod-vm             (terraform output vm_name)
+#
+# The VM uses its managed identity (AcrPull role) to pull images — no ACR
+# credentials need to be stored on the instance.
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ── Test ────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test image
+        run: docker build -t dmarc-api-test .
+
+      - name: Run test suite
+        run: |
+          docker run --rm \
+            -e APP_ENV=testing \
+            dmarc-api-test \
+            pytest tests/ -x -q
+
+  # ── Build & Push ─────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ACR
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - name: Generate image tag from short commit SHA
+        id: tag
+        run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build and push API image
+        env:
+          REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker build -t "$REGISTRY/dmarc-prod-api:$TAG" -t "$REGISTRY/dmarc-prod-api:latest" .
+          docker push "$REGISTRY/dmarc-prod-api:$TAG"
+          docker push "$REGISTRY/dmarc-prod-api:latest"
+
+      - name: Build and push frontend image
+        env:
+          REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker build -t "$REGISTRY/dmarc-prod-frontend:$TAG" -t "$REGISTRY/dmarc-prod-frontend:latest" ./frontend
+          docker push "$REGISTRY/dmarc-prod-frontend:$TAG"
+          docker push "$REGISTRY/dmarc-prod-frontend:latest"
+
+  # ── Deploy ───────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Azure VM
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      # Deployment via Azure Run Command — equivalent to AWS SSM send-command.
+      # The VM managed identity (AcrPull) handles ACR authentication without stored credentials.
+      - name: Deploy via Azure Run Command
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+        run: |
+          az vm run-command invoke \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ secrets.AZURE_VM_NAME }}" \
+            --command-id RunShellScript \
+            --scripts "
+              set -euo pipefail
+              cd /opt/dmarc
+
+              # Authenticate to ACR using the VM's managed identity (no stored credentials)
+              az login --identity --output none
+              az acr login --name $ACR_LOGIN_SERVER
+
+              # Pull and redeploy application containers
+              export IMAGE_TAG=$IMAGE_TAG
+              export ECR_REGISTRY=$ACR_LOGIN_SERVER
+              export ECR_API_REPO=dmarc-prod-api
+              export ECR_FRONTEND_REPO=dmarc-prod-frontend
+
+              docker compose -f docker-compose.prod.yml pull api watcher frontend
+              docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend
+              docker image prune -f --filter until=24h
+
+              echo 'Deployment complete: $IMAGE_TAG'
+            " \
+            --query "value[0].message" -o tsv

@@ -1,0 +1,47 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it (contains your admin IP and subscription ID).
+
+# ── Identity ────────────────────────────────────────────────────────────────
+project_name = "dmarc"
+environment  = "prod"       # prod | staging | dev
+
+# ── Azure ────────────────────────────────────────────────────────────────────
+# Find your subscription ID: az account show --query id -o tsv
+subscription_id = "YOUR_SUBSCRIPTION_ID"
+location        = "East US"   # az account list-locations -o table
+
+# ── Topology ─────────────────────────────────────────────────────────────────
+deployment_mode = "standalone"   # standalone | split_vm | split_managed
+
+# ── ClamAV ───────────────────────────────────────────────────────────────────
+# When true, VM size auto-selects Standard_B2ms (8 GB RAM) to accommodate
+# the ClamAV daemon's ~700 MB–1 GB virus signature footprint.
+clamav_enabled = true
+
+# ── VM sizing ─────────────────────────────────────────────────────────────────
+# Leave commented out to use the automatic selection driven by clamav_enabled.
+# Uncomment to override:
+# vm_size = "Standard_B2ms"
+root_disk_gb = 100
+
+# ── Admin user ────────────────────────────────────────────────────────────────
+admin_username = "ubuntu"
+
+# ── Access control ────────────────────────────────────────────────────────────
+# Your public IP in CIDR notation — SSH (port 22) is restricted to this address.
+# Find your IP: curl -s https://checkip.amazonaws.com
+admin_cidr = "YOUR_PUBLIC_IP/32"
+
+# CI/CD SSH access — optional second NSG rule.
+# Self-hosted runner: set to your runner's fixed egress IP (e.g. "10.0.0.5/32")
+# GitHub-hosted runners: set to "0.0.0.0/0" — less secure, use Run Command instead
+# cicd_cidr = null
+
+# ── SSH key pair ──────────────────────────────────────────────────────────────
+# Path to your LOCAL public key file. Terraform sets it as the authorized key
+# on the VM. The private key never leaves your machine.
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# ── Networking ───────────────────────────────────────────────────────────────
+vnet_cidr          = "10.0.0.0/16"
+public_subnet_cidr = "10.0.1.0/24"

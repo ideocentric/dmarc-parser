@@ -51,9 +51,19 @@ updates:
       - "dependencies"
       - "ci"
 
-  # ── Terraform provider versions ───────────────────────────────────────────
+  # ── Terraform provider versions (AWS) ────────────────────────────────────
   - package-ecosystem: "terraform"
     directory: "/terraform/aws"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "terraform"
+
+  # ── Terraform provider versions (Azure) ───────────────────────────────────
+  - package-ecosystem: "terraform"
+    directory: "/terraform/azure"
     schedule:
       interval: "weekly"
       day: "monday"
