@@ -1,6 +1,6 @@
 # DMARC Intelligence Platform — Deployment Guide
 
-*Ubuntu 24.04 LTS — Docker deployment with CI/CD on AWS and Azure*
+*Ubuntu 24.04 LTS — Docker deployment with CI/CD on AWS, Azure, and Linode*
 
 ---
 
@@ -11,24 +11,26 @@
 3. [Prerequisites](#prerequisites)
 4. [Provision Infrastructure — AWS](#provision-infrastructure--aws)
 5. [Provision Infrastructure — Azure](#provision-infrastructure--azure)
-6. [Configure GitHub Actions CI/CD](#configure-github-actions-cicd)
-7. [First-Time Server Setup](#first-time-server-setup)
-8. [Configure the Environment](#configure-the-environment)
-9. [GeoIP Database](#geoip-database)
-10. [SSL Certificate with Certbot (Docker)](#ssl-certificate-with-certbot-docker)
-11. [First Deployment](#first-deployment)
-12. [Initial Application Setup via CLI](#initial-application-setup-via-cli)
-13. [Automated Certificate Renewal](#automated-certificate-renewal)
-14. [Automated Backups](#automated-backups)
-15. [Ongoing Operations](#ongoing-operations)
-16. [Updating the Application](#updating-the-application)
-17. [Troubleshooting](#troubleshooting)
+6. [Provision Infrastructure — Linode](#provision-infrastructure--linode)
+7. [Configure GitHub Actions CI/CD](#configure-github-actions-cicd)
+8. [First-Time Server Setup](#first-time-server-setup)
+9. [Configure the Environment](#configure-the-environment)
+10. [GeoIP Database](#geoip-database)
+11. [SSL Certificate with Certbot (Docker)](#ssl-certificate-with-certbot-docker)
+12. [First Deployment](#first-deployment)
+13. [Initial Application Setup via CLI](#initial-application-setup-via-cli)
+14. [Automated Certificate Renewal](#automated-certificate-renewal)
+15. [Automated Backups](#automated-backups)
+16. [Ongoing Operations](#ongoing-operations)
+17. [Updating the Application](#updating-the-application)
+18. [Troubleshooting](#troubleshooting)
+19. [Appendix A — Estimated Monthly Infrastructure Costs](#appendix-a--estimated-monthly-infrastructure-costs)
 
 ---
 
 ## Overview
 
-The DMARC Intelligence Platform runs as Docker containers managed by Compose. The frontend container handles TLS directly — no host-level reverse proxy is required. Container images are built by GitHub Actions, pushed to a container registry (ECR on AWS, ACR on Azure), and pulled to the server on each deployment.
+The DMARC Intelligence Platform runs as Docker containers managed by Compose. The frontend container handles TLS directly — no host-level reverse proxy is required. Container images are built by GitHub Actions and pushed to a registry — ECR on AWS, ACR on Azure, or Docker Hub / GitHub Container Registry on Linode — then pulled to the server on each deployment.
 
 Three deployment topologies are supported, controlled by a single Terraform variable. See [Choosing a Deployment Topology](#choosing-a-deployment-topology) before provisioning.
 
@@ -109,8 +111,8 @@ flowchart TD
         end
     end
 
-    subgraph private["Managed PostgreSQL — private subnet"]
-        DB[("AWS RDS\nor Azure PostgreSQL\nFlexible Server")]
+    subgraph private["Managed PostgreSQL — private network"]
+        DB[("AWS RDS\nor Azure PostgreSQL\nor Linode Managed PG")]
         BK["Automated backups\nNo OS management"]
     end
 
@@ -138,13 +140,13 @@ flowchart TD
 
 **Recommendation:** Start with `standalone` to verify the deployment, then migrate to `split_managed` for production. The database host is the only change in `.env.prod` when switching — application code and containers are identical across all three modes.
 
-> **NAT Gateway cost note:** `split_vm` and `split_managed` both create a NAT Gateway to give the private subnet outbound internet access (OS updates, ECR/ACR pulls from DB VM). On AWS this is ~$0.045/hr (~$33/month) plus data transfer. On Azure it is ~$0.045/hr plus data transfer. Factor this into topology selection.
+> **NAT Gateway cost note:** On AWS and Azure, `split_vm` and `split_managed` both create a NAT Gateway to give the private subnet outbound internet access (OS updates, registry pulls from the DB VM). On AWS this is ~$0.045/hr (~$33/month) plus data transfer; on Azure ~$0.045/hr. On Linode, VPC interfaces are additive — the DB Linode retains its own public IP for outbound traffic, so no NAT Gateway is needed or created.
 
 ---
 
 ## Prerequisites
 
-### Both clouds
+### All providers
 
 - [ ] Terraform ≥ 1.5 installed locally
 - [ ] An SSH key pair on your local machine (`~/.ssh/id_rsa` and `~/.ssh/id_rsa.pub`)
@@ -163,12 +165,19 @@ flowchart TD
 - [ ] A subscription with Contributor access (needed for role assignments)
 - [ ] `az account show` confirms the correct subscription is active
 
+### Linode
+
+- [ ] A Linode account with a Personal Access Token (create at **cloud.linode.com → Profile → API Tokens**)
+- [ ] Token scopes: Linodes, Firewalls, VPCs, Databases, IPs — all Read/Write
+- [ ] A container registry account: Docker Hub (`docker.io`) or GitHub Container Registry (`ghcr.io`) — Linode has no native registry
+
 ### Server sizing
 
 | | Without ClamAV | With ClamAV (default) |
 |---|---|---|
 | **AWS** | t3.medium (2 vCPU / 4 GB) | **t3.large (2 vCPU / 8 GB)** |
 | **Azure** | Standard_B2s (2 vCPU / 4 GB) | **Standard_B2ms (2 vCPU / 8 GB)** |
+| **Linode** | g6-standard-2 (2 vCPU / 4 GB) | **g6-standard-4 (4 vCPU / 8 GB)** |
 | **Disk** | 50 GB | **100 GB** |
 
 ClamAV loads 700 MB–1 GB of virus signatures into RAM at startup. The Terraform configuration auto-selects the larger VM size when `clamav_enabled = true`.
@@ -392,6 +401,119 @@ https://docs.github.com/en/actions/security-for-github-actions/security-hardenin
 
 ---
 
+## Provision Infrastructure — Linode
+
+The Terraform configuration in `terraform/linode/` provisions all infrastructure using the same naming convention `{project}-{environment}-{resource}`. Linode has no native container registry — images must be hosted on Docker Hub or GitHub Container Registry.
+
+### Resources created — all topologies
+
+| Resource | Name |
+|---|---|
+| Linode Instance | `dmarc-prod-app` |
+| App Firewall | `dmarc-prod-app-fw` |
+| Bootstrap StackScript | `dmarc-prod-docker-bootstrap` |
+
+### Additional resources — split topologies
+
+| Resource | split_vm | split_managed |
+|---|---|---|
+| VPC | ✓ | ✓ |
+| VPC Subnet (`10.8.0.0/24`) | ✓ | ✓ |
+| DB Firewall | ✓ | ✓ |
+| DB Linode Instance (`dmarc-prod-db`) | ✓ | — |
+| Linode Managed PostgreSQL (`dmarc-prod-db`) | — | ✓ |
+
+> **No NAT Gateway:** Linode VPC interfaces are additive. The DB Linode retains its public IP for outbound internet access; only PostgreSQL port 5432 is isolated to the VPC CIDR by the DB firewall.
+
+### Firewall rules
+
+| Firewall | Port | Source | Purpose |
+|---|---|---|---|
+| `dmarc-prod-app-fw` | 443 | `0.0.0.0/0` | HTTPS |
+| `dmarc-prod-app-fw` | 80 | `0.0.0.0/0` | HTTP (ACME + redirect) |
+| `dmarc-prod-app-fw` | 22 | `admin_cidr` | SSH — your IP only |
+| `dmarc-prod-db-fw` | 22 | `admin_cidr` | SSH admin access to DB Linode |
+| `dmarc-prod-db-fw` | 5432 | `vpc_subnet_cidr` | PostgreSQL — VPC only |
+
+### Deploy
+
+```bash
+cd terraform/linode
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit `terraform.tfvars`. Required values:
+
+```hcl
+# Linode API personal access token
+linode_token = "your-linode-api-token"
+
+# Your public IP — find it: curl -s https://checkip.amazonaws.com
+admin_cidr = "203.0.113.5/32"
+
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# For split_vm or split_managed:
+# deployment_mode = "split_vm"
+# db_password     = "$(openssl rand -hex 24)"    # split_vm only
+```
+
+Then:
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+### Key outputs
+
+```bash
+terraform output public_ip      # Point your DNS A record here
+terraform output ssh_command    # SSH command to connect to the server
+
+# Split topologies only:
+terraform output -raw database_url   # paste into .env.prod
+terraform output -raw db_password    # auto-generated for split_managed
+```
+
+### CI/CD for Linode
+
+Linode has no SSM or VM Run Command equivalent — deployment uses SSH. Store the following as GitHub Actions secrets:
+
+| Secret | Value |
+|---|---|
+| `LINODE_HOST` | `terraform output -raw public_ip` |
+| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/id_rsa` (your private key) |
+| `REGISTRY_USERNAME` | Docker Hub username or GitHub username |
+| `REGISTRY_PASSWORD` | Docker Hub access token or GitHub PAT |
+| `REGISTRY_IMAGE_API` | e.g. `docker.io/yourorg/dmarc-api` or `ghcr.io/yourorg/dmarc-api` |
+| `REGISTRY_IMAGE_FRONTEND` | e.g. `docker.io/yourorg/dmarc-frontend` |
+
+A minimal deploy step in `.github/workflows/deploy-linode.yml`:
+
+```yaml
+- name: Deploy to Linode
+  uses: appleboy/ssh-action@v1
+  with:
+    host: ${{ secrets.LINODE_HOST }}
+    username: root
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    script: |
+      cd /opt/dmarc
+      echo "${{ secrets.REGISTRY_PASSWORD }}" \
+        | docker login docker.io -u "${{ secrets.REGISTRY_USERNAME }}" --password-stdin
+      IMAGE_TAG=${{ github.sha }}
+      export REGISTRY_IMAGE_API=${{ secrets.REGISTRY_IMAGE_API }}
+      export REGISTRY_IMAGE_FRONTEND=${{ secrets.REGISTRY_IMAGE_FRONTEND }}
+      docker compose -f docker-compose.prod.yml pull api watcher frontend
+      docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend
+```
+
+Update `docker-compose.prod.yml` image references to use your registry path (e.g. `docker.io/yourorg/dmarc-api:${IMAGE_TAG}`).
+
+---
+
 ## Configure GitHub Actions CI/CD
 
 ### AWS secrets
@@ -443,6 +565,9 @@ ssh -i ~/.ssh/id_rsa ubuntu@$(terraform -chdir=terraform/aws output -raw public_
 
 # Azure
 ssh -i ~/.ssh/id_rsa ubuntu@$(terraform -chdir=terraform/azure output -raw public_ip)
+
+# Linode (root user — no ubuntu user on Linode images)
+ssh -i ~/.ssh/id_rsa root@$(terraform -chdir=terraform/linode output -raw public_ip)
 ```
 
 Docker was installed by the cloud-init script during provisioning. Verify:
@@ -478,7 +603,7 @@ cd /opt/dmarc
 
 ### split_vm: accessing the DB VM
 
-The DB VM has no public IP. Reach it through the app VM as a jump host:
+**AWS / Azure** — the DB VM has no public IP; reach it through the app VM as a jump host:
 
 ```bash
 # AWS — connect to DB EC2 via app EC2
@@ -488,7 +613,14 @@ ssh -i ~/.ssh/id_rsa -J ubuntu@<app_public_ip> ubuntu@<db_private_ip>
 ssh -i ~/.ssh/id_rsa -J ubuntu@<app_public_ip> ubuntu@<db_private_ip>
 ```
 
-The DB private IP is available from Terraform: `terraform output db_host`
+**Linode** — the DB Linode retains its own public IP (SSH firewalled to `admin_cidr` only):
+
+```bash
+# Linode — SSH directly to the DB Linode
+ssh -i ~/.ssh/id_rsa root@<db_public_ip>
+```
+
+The DB host (VPC IP for app connectivity) is available from Terraform: `terraform output db_host`
 
 ---
 
@@ -637,6 +769,24 @@ export IMAGE_TAG="latest"
 
 az login --identity
 az acr login --name "$ECR_REGISTRY"
+```
+
+**Linode (Docker Hub or GitHub Container Registry):**
+```bash
+# Docker Hub
+export ECR_REGISTRY="docker.io"
+export ECR_API_REPO="yourorg/dmarc-api"
+export ECR_FRONTEND_REPO="yourorg/dmarc-frontend"
+export IMAGE_TAG="latest"
+
+echo "<your-docker-hub-token>" | docker login docker.io -u "<your-username>" --password-stdin
+
+# GitHub Container Registry
+export ECR_REGISTRY="ghcr.io"
+export ECR_API_REPO="yourorg/dmarc-api"
+export ECR_FRONTEND_REPO="yourorg/dmarc-frontend"
+
+echo "<your-github-pat>" | docker login ghcr.io -u "<your-github-username>" --password-stdin
 ```
 
 > Images are not available until the first GitHub Actions push to `main` completes. Trigger it via the Actions UI or by pushing a commit.
@@ -978,8 +1128,8 @@ All application updates flow through GitHub Actions on push to `main`:
 
 1. Runs the test suite
 2. Builds new images tagged with the commit SHA
-3. Pushes to ECR (AWS) or ACR (Azure)
-4. Deploys via SSM (AWS) or VM Run Command (Azure)
+3. Pushes to ECR (AWS), ACR (Azure), or Docker Hub / GHCR (Linode)
+4. Deploys via SSM (AWS), VM Run Command (Azure), or SSH (Linode)
 
 ### Manual update
 
@@ -1010,6 +1160,21 @@ export IMAGE_TAG="<sha-or-tag>"
 
 az login --identity
 az acr login --name "$ECR_REGISTRY"
+
+docker compose -f docker-compose.prod.yml pull api watcher frontend
+docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend
+```
+
+**Linode:**
+
+```bash
+cd /opt/dmarc
+export ECR_REGISTRY="docker.io"   # or ghcr.io
+export ECR_API_REPO="yourorg/dmarc-api"
+export ECR_FRONTEND_REPO="yourorg/dmarc-frontend"
+export IMAGE_TAG="<sha-or-tag>"
+
+echo "<registry-token>" | docker login "$ECR_REGISTRY" -u "<username>" --password-stdin
 
 docker compose -f docker-compose.prod.yml pull api watcher frontend
 docker compose -f docker-compose.prod.yml up -d --no-deps api watcher frontend
@@ -1159,3 +1324,246 @@ docker exec dmarc-prod-watcher ls /app/data/reports/incoming/
 ```
 
 The client slug in the directory name must exactly match the slug in the database.
+
+---
+
+### Linode: StackScript did not run
+
+Docker may not be installed if the StackScript failed on first boot. Check the boot log:
+
+```bash
+cat /var/log/stackscript.log
+```
+
+If Docker is missing, install it manually:
+
+```bash
+curl -fsSL https://get.docker.com | bash
+systemctl enable --now docker
+mkdir -p /opt/dmarc
+```
+
+### Linode: split_vm — cannot reach DB over VPC
+
+Confirm the DB Linode's VPC interface is active and the app Linode's interface is up:
+
+```bash
+# On the app Linode — should resolve to a 10.8.0.x address
+ip addr show | grep "10.8.0"
+
+# Test PostgreSQL reachability over VPC (replace with DB VPC IP from terraform output db_host)
+nc -zv 10.8.0.x 5432
+```
+
+If the VPC interface is missing, the instance may have been created before the VPC subnet was ready. Taint the instance and re-apply:
+
+```bash
+terraform taint module.compute.linode_instance.app
+terraform apply
+```
+
+### Linode: split_managed — managed PostgreSQL not accepting connections
+
+Linode Managed Databases enforce an IP allow list. Verify the app Linode's public IP matches the `allow_list` entry:
+
+```bash
+# From the app Linode — confirm public IP
+curl -s https://checkip.amazonaws.com
+
+# Update the allow list if the IP has changed:
+terraform apply   # re-applies the allow_list from app_public_ip output
+```
+
+Managed PostgreSQL requires SSL. If connecting via `psql`:
+
+```bash
+psql "host=<managed-db-host> port=5432 dbname=<db> user=<user> sslmode=require"
+```
+
+### Linode: registry pull fails
+
+Docker Hub has rate limits for unauthenticated pulls (100/6h). Always authenticate before pulling:
+
+```bash
+docker login docker.io -u "<username>"
+```
+
+For GitHub Container Registry, ensure the PAT has `read:packages` scope and the package visibility is set to match (public or private with auth).
+
+---
+
+## Appendix A — Estimated Monthly Infrastructure Costs
+
+> **Prices are approximate as of mid-2025. All figures are USD, pay-as-you-go / on-demand rates, US East region, with ClamAV enabled (the default configuration). Verify current rates before budgeting.**
+>
+> Excluded from all estimates: egress data transfer beyond free/included allowances, DNS hosting fees, GitHub Actions compute (free on public repositories / included minutes on private), MaxMind GeoIP subscription (~$24/yr for GeoLite2 via the free tier, $0 for offline mmdb), and SSL certificates (Let's Encrypt = free).
+
+---
+
+### Summary — total estimated monthly cost
+
+| | `standalone` | `split_vm` | `split_managed` |
+|---|---|---|---|
+| **AWS** | ~$69 | ~$119 | ~$116 |
+| **Azure** | ~$73 | ~$126 | ~$134 |
+| **Linode** | ~$48 | ~$60 | ~$78 |
+
+The NAT Gateway is the dominant cost driver in split topologies on AWS and Azure (~$33/mo). Linode does not require a NAT Gateway — VPC interfaces are additive, so the DB Linode retains its own public IP for outbound traffic.
+
+---
+
+### AWS — detailed breakdown (us-east-1, on-demand)
+
+#### `standalone`
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| EC2 — app | t3.large (2 vCPU / 8 GB) | $0.0832/hr | 730 hr | $60.74 |
+| EBS — app | gp3, 100 GB | $0.08/GB | 100 GB | $8.00 |
+| Elastic IP | Associated to instance | $0.00 | — | $0.00 |
+| **Total** | | | | **~$69** |
+
+> Without ClamAV (`clamav_enabled = false`): use t3.medium at $0.0416/hr → **~$38/mo**
+
+#### `split_vm`
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| EC2 — app | t3.large | $0.0832/hr | 730 hr | $60.74 |
+| EC2 — DB | t3.small (2 vCPU / 2 GB) | $0.0208/hr | 730 hr | $15.18 |
+| EBS — app | gp3, 100 GB | $0.08/GB | 100 GB | $8.00 |
+| EBS — DB | gp3, 30 GB | $0.08/GB | 30 GB | $2.40 |
+| Elastic IP | Associated | $0.00 | — | $0.00 |
+| NAT Gateway | Hourly fee | $0.045/hr | 730 hr | $32.85 |
+| NAT Gateway | Data processed | $0.045/GB | ~0 GB† | ~$0.00 |
+| **Total** | | | | **~$119** |
+
+#### `split_managed` (RDS PostgreSQL)
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| EC2 — app | t3.large | $0.0832/hr | 730 hr | $60.74 |
+| EBS — app | gp3, 100 GB | $0.08/GB | 100 GB | $8.00 |
+| Elastic IP | Associated | $0.00 | — | $0.00 |
+| RDS — db | db.t3.micro (2 vCPU / 1 GB), Single-AZ | $0.017/hr | 730 hr | $12.41 |
+| RDS storage | gp2, 20 GB | $0.115/GB | 20 GB | $2.30 |
+| NAT Gateway | Hourly | $0.045/hr | 730 hr | $32.85 |
+| **Total** | | | | **~$116** |
+
+> Multi-AZ RDS doubles the instance cost (~$25/mo). For DMARC data volumes, Single-AZ with automated backups is typically sufficient.
+
+---
+
+### Azure — detailed breakdown (East US, pay-as-you-go)
+
+#### `standalone`
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| VM — app | Standard_B2ms (2 vCPU / 8 GB) | $0.0832/hr | 730 hr | $60.74 |
+| Managed disk — app | Standard SSD E10 (128 GB tier) | — | 128 GB | $9.60 |
+| Static Public IP | Standard SKU | $0.004/hr | 730 hr | $2.92 |
+| **Total** | | | | **~$73** |
+
+> Without ClamAV: Standard_B2s at $0.0416/hr → **~$43/mo**
+
+#### `split_vm`
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| VM — app | Standard_B2ms | $0.0832/hr | 730 hr | $60.74 |
+| VM — DB | Standard_B1ms (1 vCPU / 2 GB) | $0.0207/hr | 730 hr | $15.11 |
+| Managed disk — app | Standard SSD E10 (128 GB) | — | 128 GB | $9.60 |
+| Managed disk — DB | Standard SSD E4 (32 GB) | — | 32 GB | $4.94 |
+| Static Public IP | Standard SKU | $0.004/hr | 730 hr | $2.92 |
+| NAT Gateway | Hourly | $0.045/hr | 730 hr | $32.85 |
+| **Total** | | | | **~$126** |
+
+#### `split_managed` (PostgreSQL Flexible Server)
+
+| Resource | Type | Unit price | Qty | $/mo |
+|---|---|---|---|---|
+| VM — app | Standard_B2ms | $0.0832/hr | 730 hr | $60.74 |
+| Managed disk — app | Standard SSD E10 (128 GB) | — | 128 GB | $9.60 |
+| Static Public IP | Standard SKU | $0.004/hr | 730 hr | $2.92 |
+| PG Flexible Server | Burstable Standard_B1ms (1 vCPU / 2 GB) | $0.0336/hr | 730 hr | $24.53 |
+| PG storage | 32 GB | $0.115/GB | 32 GB | $3.68 |
+| NAT Gateway | Hourly | $0.045/hr | 730 hr | $32.85 |
+| **Total** | | | | **~$134** |
+
+> Azure PG Flexible Server is more expensive than RDS at equivalent specs. The Burstable tier is sufficient for DMARC report volumes but is not recommended for workloads with sustained high CPU.
+
+---
+
+### Linode — detailed breakdown (us-east, monthly flat rate)
+
+Linode pricing is a flat monthly rate. Each instance includes SSD storage and a generous outbound transfer allowance — no separate disk or transfer line items for typical DMARC volumes.
+
+#### `standalone`
+
+| Resource | Type | Included | $/mo |
+|---|---|---|---|
+| Linode — app | g6-standard-4 (4 vCPU / 8 GB RAM / 160 GB SSD) | 4 TB/mo transfer | $48.00 |
+| **Total** | | | **~$48** |
+
+> Without ClamAV: g6-standard-2 (2 vCPU / 4 GB / 80 GB SSD, 4 TB transfer) → **~$24/mo**
+
+#### `split_vm`
+
+| Resource | Type | Included | $/mo |
+|---|---|---|---|
+| Linode — app | g6-standard-4 (4 vCPU / 8 GB / 160 GB) | 4 TB/mo transfer | $48.00 |
+| Linode — DB | g6-standard-1 (1 vCPU / 2 GB / 50 GB) | 2 TB/mo transfer | $12.00 |
+| NAT Gateway | Not required — VPC is additive | — | $0.00 |
+| **Total** | | | **~$60** |
+
+#### `split_managed` (Linode Managed PostgreSQL)
+
+| Resource | Type | Included | $/mo |
+|---|---|---|---|
+| Linode — app | g6-standard-4 (4 vCPU / 8 GB / 160 GB) | 4 TB/mo transfer | $48.00 |
+| Managed PostgreSQL | Single node, 2 GB plan | Automated backups | ~$30.00 |
+| NAT Gateway | Not required | — | $0.00 |
+| **Total** | | | **~$78** |
+
+> Linode Managed PostgreSQL pricing has evolved with the Akamai acquisition. Verify the current node pricing at **linode.com/pricing/#databases** before provisioning. The $30 estimate reflects a single-node 2 GB plan; HA configurations (3 nodes) cost approximately 3×.
+
+---
+
+### Reserved instance savings (AWS and Azure)
+
+Committing to a 1-year term (no upfront payment) reduces compute costs by approximately 30–40% on both AWS and Azure. Linode offers only flat monthly pricing with no reserved option.
+
+| Platform | Topology | On-demand | 1-year reserved | Monthly saving |
+|---|---|---|---|---|
+| AWS | standalone | ~$69 | ~$47 | ~$22 |
+| AWS | split_vm | ~$119 | ~$86 | ~$33 |
+| AWS | split_managed | ~$116 | ~$82 | ~$34 |
+| Azure | standalone | ~$73 | ~$50 | ~$23 |
+| Azure | split_vm | ~$126 | ~$91 | ~$35 |
+| Azure | split_managed | ~$134 | ~$98 | ~$36 |
+| Linode | all | flat rate | — | — |
+
+> Reserved savings apply to EC2/VM and RDS/PG instance hours only. NAT Gateway, storage, and data transfer remain on-demand pricing.
+
+---
+
+### Data transfer costs
+
+Outbound data transfer is billed separately on AWS and Azure and is not included in the estimates above. For typical DMARC deployments (dashboard access by a small team, API traffic) expect 5–20 GB/mo outbound.
+
+| Platform | Free / included | Overage |
+|---|---|---|
+| **AWS** | 100 GB/mo free to internet | $0.09/GB (us-east-1) |
+| **Azure** | 100 GB/mo free | $0.087/GB (Zone 1) |
+| **Linode** | 4 TB/mo included per g6-standard-4 | $0.01/GB |
+
+Linode's included transfer pool is shared across all Linodes in the account, making transfer costs a non-issue for this workload.
+
+---
+
+### Pricing references
+
+- AWS: https://aws.amazon.com/ec2/pricing/on-demand/ · https://aws.amazon.com/rds/postgresql/pricing/
+- Azure: https://azure.microsoft.com/en-us/pricing/calculator/
+- Linode: https://www.linode.com/pricing/

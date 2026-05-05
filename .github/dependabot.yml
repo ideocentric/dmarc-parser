@@ -70,3 +70,13 @@ updates:
     labels:
       - "dependencies"
       - "terraform"
+
+  # ── Terraform provider versions (Linode) ──────────────────────────────────
+  - package-ecosystem: "terraform"
+    directory: "/terraform/linode"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "terraform"

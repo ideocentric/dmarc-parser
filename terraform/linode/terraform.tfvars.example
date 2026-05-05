@@ -1,0 +1,63 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it (contains your API token and DB password).
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+project_name = "dmarc"
+environment  = "prod"
+
+# ── Linode API token ──────────────────────────────────────────────────────────
+# Create at: https://cloud.linode.com/profile/tokens
+# Required scopes: Linodes (read/write), Firewalls (read/write),
+#                  VPCs (read/write), Databases (read/write), IPs (read/write)
+# Alternatively export LINODE_TOKEN="your-token" and omit this line.
+linode_token = "YOUR_LINODE_API_TOKEN"
+
+# ── Region ────────────────────────────────────────────────────────────────────
+# Common slugs: us-east, us-central, us-west, eu-west, eu-central,
+#               ap-southeast, ap-west, ca-central
+# Full list: linode-cli regions list
+region = "us-east"
+
+# ── Topology ──────────────────────────────────────────────────────────────────
+# standalone    — App + DB together on one Linode (simplest, lowest cost ~$36/mo)
+# split_vm      — App Linode + DB Linode connected via private VPC
+# split_managed — App Linode + Linode Managed PostgreSQL (automated backups, HA option)
+deployment_mode = "standalone"
+
+# ── ClamAV ────────────────────────────────────────────────────────────────────
+clamav_enabled = true
+
+# ── Instance sizing ───────────────────────────────────────────────────────────
+# Auto-selected: g6-standard-4 (4 CPU / 8 GB) with ClamAV
+#                g6-standard-2 (2 CPU / 4 GB) without ClamAV
+# Full list: linode-cli linodes types
+# instance_type = "g6-standard-4"
+
+# ── Access control ────────────────────────────────────────────────────────────
+# Find your IP: curl -s https://checkip.amazonaws.com
+admin_cidr = "YOUR_PUBLIC_IP/32"
+
+# ── SSH key ───────────────────────────────────────────────────────────────────
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# ── Networking (split topologies only) ───────────────────────────────────────
+vpc_subnet_cidr = "10.8.0.0/24"
+
+# ── Database (required for split_vm and split_managed) ───────────────────────
+
+# split_vm — supply a strong password (used in the Docker PostgreSQL container):
+# db_password = ""   # openssl rand -hex 24
+
+# split_vm DB instance sizing:
+# db_instance_type = "g6-standard-1"   # 1 CPU / 2 GB RAM / 50 GB disk
+
+# split_managed — Linode generates the password automatically.
+# Retrieve after apply: terraform output -raw db_password
+# db_cluster_size = 1   # 1 = single node | 2 = primary+standby | 3 = HA
+# db_engine       = "postgresql/16"
+
+# ── Container registry note ───────────────────────────────────────────────────
+# Linode has no native container registry. Use one of:
+#   - Docker Hub:               docker.io/yourorg/dmarc-api
+#   - GitHub Container Registry: ghcr.io/yourorg/dmarc-api
+# Update docker-compose.prod.yml image references accordingly.
