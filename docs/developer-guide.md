@@ -194,23 +194,32 @@ Never use user-supplied client IDs directly. The slug→client resolution is the
 
 ### Authentication flow
 
-```
-POST /auth/login
-  ├─ password check
-  ├─ if mfa_enabled → return {mfa_required: true, mfa_token: "<5-min JWT>"}
-  │    └─ POST /auth/mfa/verify {mfa_token, code}
-  │         └─ TOTP check + replay prevention → issue tokens
-  └─ else → issue tokens directly
+```mermaid
+flowchart TD
+    Login(["POST /auth/login"])
+    PW{"password\ncorrect?"}
+    MFA{"mfa_enabled?"}
+    MFAResp["return\nmfa_required: true\nmfa_token: 5-min JWT"]
+    Verify(["POST /auth/mfa/verify\n{mfa_token, code}"])
+    TOTP{"TOTP valid +\nno replay?"}
+    Issue["issue tokens\naccess_token — 60 min HS256 JWT\nrefresh_token — 30 day HttpOnly cookie"]
+    Deny["401 Unauthorized"]
+    TOTPFail["401 Invalid code"]
 
-Tokens issued:
-  - access_token: 60-min HS256 JWT in response body
-    claims: sub (user_id), email, role, client_ids, type="access"
-            [mcp=True]  — present when user.must_change_password is True
-            [msr=True]  — present when MFA is required for the user but not yet enrolled
-  - refresh_token: 30-day HS256 JWT as HttpOnly cookie
-    claims: sub, type="refresh", jti
-    JTI stored in refresh_tokens table — rotated on each use, deleted on logout
+    Login --> PW
+    PW -->|yes| MFA
+    PW -->|no| Deny
+    MFA -->|yes| MFAResp
+    MFAResp --> Verify
+    Verify --> TOTP
+    TOTP -->|yes| Issue
+    TOTP -->|no| TOTPFail
+    MFA -->|no| Issue
 ```
+
+**Access token claims:** `sub` (user_id), `email`, `role`, `client_ids`, `type="access"`. Additional claims `mcp=True` (must change password) and `msr=True` (MFA setup required) gate middleware enforcement.
+
+**Refresh token claims:** `sub`, `type="refresh"`, `jti`. The JTI is stored in the `refresh_tokens` table and rotated on each use; deleted on logout.
 
 Two middleware functions in `api/main.py` enforce token claims server-side:
 

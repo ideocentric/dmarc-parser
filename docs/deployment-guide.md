@@ -36,51 +36,90 @@ Three deployment topologies are supported, controlled by a single Terraform vari
 
 All services — including PostgreSQL — run on a single VM.
 
-```
-Internet  HTTPS :443 / HTTP :80
-    │
-    ▼
-┌──────────────────────────────────────────────────────────────┐
-│  App VM (public subnet)                                      │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │  Docker network (dmarc-prod)                           │  │
-│  │  frontend :80/:443 → api :8000 → db :5432 (internal)  │  │
-│  │  watcher · certbot · clamav                            │  │
-│  └────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Internet(["Internet\nHTTPS :443 / HTTP :80"])
+
+    subgraph vm["App VM — public subnet"]
+        subgraph docker["Docker network — dmarc-prod"]
+            FE["frontend\nnginx :80 / :443"]
+            API["api\nuvicorn :8000"]
+            DB[("db\nPostgreSQL :5432")]
+            W["watcher\n+ scheduler"]
+            CB["certbot\nrenewal loop"]
+            AV["clamav\nclamd :3310"]
+        end
+    end
+
+    Internet --> FE
+    FE -->|"/api/*"| API
+    API <--> DB
+    W <--> DB
+    W -. scan .-> AV
+    API -. scan .-> AV
 ```
 
 ### split_vm topology
 
 The application runs on a public VM; PostgreSQL runs on a separate VM in a private subnet with no internet exposure.
 
-```
-Internet  HTTPS :443
-    │
-    ▼
-┌─────────────────────────┐    ┌─────────────────────────────┐
-│  App VM (public subnet) │    │  DB VM (private subnet)     │
-│  frontend · api         │───▶│  PostgreSQL :5432           │
-│  watcher · certbot      │    │  (no public IP)             │
-│  clamav                 │    │  OS updates via NAT Gateway │
-└─────────────────────────┘    └─────────────────────────────┘
+```mermaid
+flowchart TD
+    Internet(["Internet\nHTTPS :443 / HTTP :80"])
+
+    subgraph public["App VM — public subnet"]
+        subgraph docker["Docker network — dmarc-prod"]
+            FE["frontend\nnginx :80/:443"]
+            API["api\nuvicorn :8000"]
+            W["watcher\n+ scheduler"]
+            CB["certbot\nrenewal loop"]
+            AV["clamav\nclamd :3310"]
+        end
+    end
+
+    subgraph private["DB VM — private subnet  ·  no public IP"]
+        DB[("PostgreSQL\n:5432")]
+        NAT["NAT Gateway\n(outbound only)"]
+    end
+
+    Internet --> FE
+    FE -->|"/api/*"| API
+    API <-->|":5432"| DB
+    W <-->|":5432"| DB
+    W -. scan .-> AV
+    API -. scan .-> AV
+    DB -.->|OS updates| NAT
 ```
 
 ### split_managed topology
 
 The application runs on a public VM; PostgreSQL is a fully managed cloud service in a private network.
 
-```
-Internet  HTTPS :443
-    │
-    ▼
-┌─────────────────────────┐    ┌────────────────────────────────────┐
-│  App VM (public subnet) │    │  Managed PostgreSQL (private)      │
-│  frontend · api         │───▶│  AWS RDS  or  Azure PG Flex Server │
-│  watcher · certbot      │    │  Automated backups · no OS mgmt    │
-│  clamav                 │    └────────────────────────────────────┘
-└─────────────────────────┘
+```mermaid
+flowchart TD
+    Internet(["Internet\nHTTPS :443 / HTTP :80"])
+
+    subgraph public["App VM — public subnet"]
+        subgraph docker["Docker network — dmarc-prod"]
+            FE["frontend\nnginx :80/:443"]
+            API["api\nuvicorn :8000"]
+            W["watcher\n+ scheduler"]
+            CB["certbot\nrenewal loop"]
+            AV["clamav\nclamd :3310"]
+        end
+    end
+
+    subgraph private["Managed PostgreSQL — private subnet"]
+        DB[("AWS RDS\nor Azure PostgreSQL\nFlexible Server")]
+        BK["Automated backups\nNo OS management"]
+    end
+
+    Internet --> FE
+    FE -->|"/api/*"| API
+    API <-->|":5432"| DB
+    W <-->|":5432"| DB
+    W -. scan .-> AV
+    API -. scan .-> AV
 ```
 
 ---
@@ -541,19 +580,19 @@ Certbot runs as a Docker container (`dmarc-prod-certbot`) sharing volumes with t
 
 ### How it works
 
-```
-certbot container                    frontend (nginx) container
-     │                                        │
-     │  writes challenge file                 │
-     ├───────────────────────────────────────▶│  certbot-webroot volume
-     │                                        │  /.well-known/acme-challenge/
-     │                                        │
-     │  Let's Encrypt reads it via HTTP ──────▶  nginx serves port 80
-     │                                        │
-     │  certificate issued ───────────────────▶  certbot-certs volume
-     │                                           /etc/letsencrypt/live/DOMAIN/
-     │
-     └──  nginx reloads and reads new cert from shared volume
+```mermaid
+sequenceDiagram
+    participant C as certbot container
+    participant N as nginx (frontend)
+    participant LE as Let's Encrypt ACME
+
+    C->>N: write challenge file to<br/>shared certbot-webroot volume
+    LE->>N: HTTP GET /.well-known/acme-challenge/
+    N-->>LE: serve challenge file
+    LE-->>C: domain ownership confirmed
+    LE-->>C: certificate issued
+    C->>N: store cert in<br/>shared certbot-certs volume
+    N->>N: reload — serve HTTPS<br/>with new certificate
 ```
 
 ### Step 1 — Point DNS to the static IP
