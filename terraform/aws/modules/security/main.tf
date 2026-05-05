@@ -1,3 +1,5 @@
+# ── Application server security group ─────────────────────────────────────────
+
 resource "aws_security_group" "app" {
   name        = "${var.prefix}-app-sg"
   description = "DMARC application server: HTTPS/HTTP open to world, SSH restricted to admin CIDR"
@@ -69,5 +71,45 @@ resource "aws_vpc_security_group_egress_rule" "all_outbound" {
 
   tags = {
     Name = "${var.prefix}-app-sg-all-out"
+  }
+}
+
+# ── Database security group (split topologies only) ────────────────────────────
+# Allows PostgreSQL only from the app security group — no direct internet access.
+
+resource "aws_security_group" "db" {
+  count       = var.create_db_security_group ? 1 : 0
+  name        = "${var.prefix}-db-sg"
+  description = "Database server: PostgreSQL access from app security group only"
+  vpc_id      = var.vpc_id
+
+  tags = {
+    Name = "${var.prefix}-db-sg"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_postgres" {
+  count                        = var.create_db_security_group ? 1 : 0
+  security_group_id            = aws_security_group.db[0].id
+  description                  = "PostgreSQL from app security group"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.app.id
+
+  tags = {
+    Name = "${var.prefix}-db-sg-pg-in"
+  }
+}
+
+resource "aws_vpc_security_group_egress_rule" "db_all_outbound" {
+  count             = var.create_db_security_group ? 1 : 0
+  security_group_id = aws_security_group.db[0].id
+  description       = "All outbound traffic (OS updates via NAT Gateway)"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+
+  tags = {
+    Name = "${var.prefix}-db-sg-all-out"
   }
 }

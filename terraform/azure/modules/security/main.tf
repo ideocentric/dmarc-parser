@@ -1,3 +1,5 @@
+# ── Application NSG (public subnet) ──────────────────────────────────────────
+
 resource "azurerm_network_security_group" "app" {
   name                = "${var.prefix}-app-nsg"
   location            = var.location
@@ -70,8 +72,45 @@ resource "azurerm_network_security_rule" "ssh_cicd" {
   network_security_group_name = azurerm_network_security_group.app.name
 }
 
-# Associate NSG with the public subnet — rules apply to all resources in the subnet
 resource "azurerm_subnet_network_security_group_association" "public" {
   subnet_id                 = var.public_subnet_id
   network_security_group_id = azurerm_network_security_group.app.id
+}
+
+# ── Database NSG (private subnet — split topologies only) ─────────────────────
+# Restricts PostgreSQL access to traffic originating within the VNet only.
+
+resource "azurerm_network_security_group" "db" {
+  count               = var.create_db_security_group ? 1 : 0
+  name                = "${var.prefix}-db-nsg"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+
+  tags = {
+    Name = "${var.prefix}-db-nsg"
+  }
+}
+
+resource "azurerm_network_security_rule" "db_postgres" {
+  count = var.create_db_security_group ? 1 : 0
+
+  name                        = "${var.prefix}-allow-postgres"
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "5432"
+  source_address_prefix       = var.vnet_address_space
+  destination_address_prefix  = "*"
+  description                 = "PostgreSQL from VNet only"
+  resource_group_name         = var.resource_group_name
+  network_security_group_name = azurerm_network_security_group.db[0].name
+}
+
+resource "azurerm_subnet_network_security_group_association" "private" {
+  count = var.create_db_security_group && var.private_subnet_id != null ? 1 : 0
+
+  subnet_id                 = var.private_subnet_id
+  network_security_group_id = azurerm_network_security_group.db[0].id
 }

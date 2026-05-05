@@ -17,16 +17,19 @@ provider "azurerm" {
 locals {
   prefix = "${var.project_name}-${var.environment}"
 
-  # Standard_B2ms (2 vCPU / 8 GB) when ClamAV is enabled — virus signatures need ~700 MB–1 GB RAM.
-  # Standard_B2s (2 vCPU / 4 GB) is sufficient without ClamAV.
+  # Standard_B2ms (2 vCPU / 8 GB) when ClamAV is enabled.
   default_vm_size = var.clamav_enabled ? "Standard_B2ms" : "Standard_B2s"
   vm_size         = coalesce(var.vm_size, local.default_vm_size)
 
   # ACR names must be globally unique and alphanumeric only (no hyphens)
   acr_name = "${replace(local.prefix, "-", "")}acr"
+
+  # Derived from deployment_mode
+  create_private_network     = var.deployment_mode != "standalone"
+  create_db_security_group   = var.deployment_mode != "standalone"
+  create_db_delegated_subnet = var.deployment_mode == "split_managed"
 }
 
-# All resources for this deployment live in one resource group
 resource "azurerm_resource_group" "main" {
   name     = "${local.prefix}-rg"
   location = var.location
@@ -41,22 +44,29 @@ resource "azurerm_resource_group" "main" {
 module "networking" {
   source = "./modules/networking"
 
-  prefix              = local.prefix
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  vnet_cidr           = var.vnet_cidr
-  public_subnet_cidr  = var.public_subnet_cidr
+  prefix                     = local.prefix
+  resource_group_name        = azurerm_resource_group.main.name
+  location                   = azurerm_resource_group.main.location
+  vnet_cidr                  = var.vnet_cidr
+  public_subnet_cidr         = var.public_subnet_cidr
+  private_subnet_cidr        = var.private_subnet_cidr
+  db_subnet_cidr             = var.db_subnet_cidr
+  create_private_network     = local.create_private_network
+  create_db_delegated_subnet = local.create_db_delegated_subnet
 }
 
 module "security" {
   source = "./modules/security"
 
-  prefix              = local.prefix
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  public_subnet_id    = module.networking.public_subnet_id
-  admin_cidr          = var.admin_cidr
-  cicd_cidr           = var.cicd_cidr
+  prefix                   = local.prefix
+  resource_group_name      = azurerm_resource_group.main.name
+  location                 = azurerm_resource_group.main.location
+  public_subnet_id         = module.networking.public_subnet_id
+  private_subnet_id        = module.networking.private_subnet_id
+  vnet_address_space       = module.networking.vnet_address_space
+  admin_cidr               = var.admin_cidr
+  cicd_cidr                = var.cicd_cidr
+  create_db_security_group = local.create_db_security_group
 }
 
 module "registry" {
@@ -89,4 +99,32 @@ module "compute" {
   admin_username      = var.admin_username
   ssh_public_key_path = var.ssh_public_key_path
   managed_identity_id = module.iam.managed_identity_id
+}
+
+module "database" {
+  source = "./modules/database"
+
+  prefix              = local.prefix
+  environment         = var.environment
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  deployment_mode     = var.deployment_mode
+  vnet_id             = module.networking.vnet_id
+  vnet_cidr           = var.vnet_cidr
+
+  private_subnet_id      = module.networking.private_subnet_id
+  db_delegated_subnet_id = module.networking.db_delegated_subnet_id
+
+  db_vm_size          = var.db_vm_size
+  db_disk_gb          = var.db_disk_gb
+  admin_username      = var.admin_username
+  ssh_public_key_path = var.ssh_public_key_path
+
+  db_sku_name              = var.db_sku_name
+  db_storage_mb            = var.db_storage_mb
+  db_version               = var.db_version
+  db_name                  = var.db_name
+  db_admin_username        = var.db_admin_username
+  db_password              = var.db_password
+  db_backup_retention_days = var.db_backup_retention_days
 }

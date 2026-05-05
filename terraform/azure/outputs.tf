@@ -19,12 +19,12 @@ output "resource_group_name" {
 }
 
 output "vm_size_used" {
-  description = "Azure VM size that was deployed (reflects ClamAV auto-selection if no override)"
+  description = "Azure VM size that was deployed"
   value       = module.compute.vm_size_used
 }
 
 output "ssh_command" {
-  description = "SSH command to connect to the VM"
+  description = "SSH command to connect to the application server"
   value       = "ssh -i ${trimsuffix(var.ssh_public_key_path, ".pub")} ${var.admin_username}@${module.compute.public_ip}"
 }
 
@@ -36,12 +36,12 @@ output "acr_login_server" {
 }
 
 output "acr_api_repo" {
-  description = "ACR API repository name — set as GitHub secret ACR_API_REPO"
+  description = "Full ACR API image reference — set as GitHub secret ACR_API_REPO"
   value       = "${module.registry.login_server}/dmarc-prod-api"
 }
 
 output "acr_frontend_repo" {
-  description = "ACR frontend repository name — set as GitHub secret ACR_FRONTEND_REPO"
+  description = "Full ACR frontend image reference — set as GitHub secret ACR_FRONTEND_REPO"
   value       = "${module.registry.login_server}/dmarc-prod-frontend"
 }
 
@@ -50,4 +50,17 @@ output "acr_frontend_repo" {
 output "managed_identity_client_id" {
   description = "Managed identity client ID — used by the VM to authenticate to ACR"
   value       = module.iam.managed_identity_client_id
+}
+
+# ── Database (split topologies) ───────────────────────────────────────────────
+
+output "db_host" {
+  description = "Database host — private IP for split_vm, FQDN for split_managed, 'db' for standalone"
+  value       = module.database.db_host
+}
+
+output "database_url" {
+  description = "Full DATABASE_URL — copy into .env.prod on the server"
+  value       = module.database.database_url
+  sensitive   = true
 }

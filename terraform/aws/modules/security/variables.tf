@@ -4,7 +4,7 @@ variable "prefix" {
 }
 
 variable "vpc_id" {
-  description = "VPC ID to create the security group in"
+  description = "VPC ID to create security groups in"
   type        = string
 }
 
@@ -14,7 +14,13 @@ variable "admin_cidr" {
 }
 
 variable "cicd_cidr" {
-  description = "Additional CIDR allowed SSH on port 22 for CI/CD deployments. Set to null to disable. Use a fixed egress IP (self-hosted runner) or 0.0.0.0/0 for GitHub-hosted runners (less secure)."
+  description = "Additional CIDR allowed SSH on port 22 for CI/CD deployments. Set to null to disable."
   type        = string
   default     = null
+}
+
+variable "create_db_security_group" {
+  description = "Create a separate DB security group for split topologies. False for standalone."
+  type        = bool
+  default     = false
 }

@@ -1,55 +1,56 @@
 # Copy this file to terraform.tfvars and fill in your values.
-# terraform.tfvars is gitignored — never commit it (contains your admin IP).
+# terraform.tfvars is gitignored — never commit it (contains your admin IP and DB password).
 
-# ── Identity ────────────────────────────────────────────────────────────────
+# ── Identity ─────────────────────────────────────────────────────────────────
 project_name = "dmarc"
-environment  = "prod"       # prod | staging | dev
+environment  = "prod"
 
-# ── Region ──────────────────────────────────────────────────────────────────
+# ── Region ───────────────────────────────────────────────────────────────────
 aws_region = "us-east-1"
 
-# ── Topology ─────────────────────────────────────────────────────────────────
-deployment_mode = "standalone"   # standalone | split_vm | split_managed
+# ── Topology ──────────────────────────────────────────────────────────────────
+# standalone    — App + DB run together on one EC2 in Docker Compose (simplest)
+# split_vm      — App EC2 in public subnet, PostgreSQL EC2 in private subnet
+# split_managed — App EC2 in public subnet, RDS PostgreSQL in private subnet (managed)
+deployment_mode = "standalone"
 
-# ── ClamAV ───────────────────────────────────────────────────────────────────
-# When true, instance type auto-selects t3.large (8 GB RAM) to accommodate
-# the ClamAV daemon's ~700 MB–1 GB virus signature footprint.
+# ── ClamAV ────────────────────────────────────────────────────────────────────
 clamav_enabled = true
 
 # ── Instance sizing ───────────────────────────────────────────────────────────
-# Leave commented out to use the automatic selection driven by clamav_enabled.
-# Uncomment to override:
-# instance_type = "t3.large"
+# instance_type = "t3.large"   # uncomment to override auto-selection
 root_disk_gb = 100
 
 # ── Access control ────────────────────────────────────────────────────────────
-# Your public IP in CIDR notation — SSH (port 22) is restricted to this address.
 # Find your IP: curl -s https://checkip.amazonaws.com
 admin_cidr = "YOUR_PUBLIC_IP/32"
-
-# CI/CD SSH access — optional second SSH rule.
-# Self-hosted runner: set to your runner's fixed egress IP (e.g. "10.0.0.5/32")
-# GitHub-hosted runners: set to "0.0.0.0/0" (any IP) — less secure, consider SSM instead
-# Leave null (default) if deploying manually or using SSM for CI/CD.
-# cicd_cidr = null
+# cicd_cidr  = null
 
 # ── SSH key pair ──────────────────────────────────────────────────────────────
-# Path to your LOCAL public key file. Terraform uploads the public key to AWS
-# under the name {project}-{environment}-keypair. The private key never leaves
-# your machine — you use it to SSH: ssh -i ~/.ssh/id_rsa ubuntu@<public_ip>
 ssh_public_key_path = "~/.ssh/id_rsa.pub"
 
 # ── Container registry ────────────────────────────────────────────────────────
 image_retention_count = 10
+create_ci_user        = false
 
-# CI/CD IAM user — set true to create an IAM user with ECR push + SSM permissions.
-# The access key and secret are output by terraform (store them as GitHub secrets).
-# Leave false if using GitHub Actions OIDC (recommended — no long-lived credentials).
-create_ci_user = false
+# ── Networking ────────────────────────────────────────────────────────────────
+vpc_cidr              = "10.0.0.0/16"
+public_subnet_cidr    = "10.0.1.0/24"
 
-# ── Networking ───────────────────────────────────────────────────────────────
-vpc_cidr           = "10.0.0.0/16"
-public_subnet_cidr = "10.0.1.0/24"
+# Required for split_vm and split_managed — ignored for standalone:
+private_subnet_cidr   = "10.0.2.0/24"   # primary private subnet (DB VM or RDS)
+private_subnet_cidr_2 = "10.0.3.0/24"   # second AZ (required for RDS subnet group)
 
-# Defaults to the first available AZ in the region. Override if needed:
-# availability_zone = "us-east-1a"
+# ── Database (required for split_vm and split_managed) ───────────────────────
+# Generate a strong password: openssl rand -hex 24
+# db_password = ""
+
+# split_vm DB EC2 sizing:
+# db_instance_type = "t3.small"
+# db_disk_gb       = 30
+
+# split_managed RDS sizing:
+# db_instance_class      = "db.t3.micro"
+# db_storage_gb          = 20
+# db_backup_retention_days = 7
+# db_deletion_protection   = false   # set true for production

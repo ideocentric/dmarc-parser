@@ -22,7 +22,7 @@ variable "location" {
 }
 
 variable "deployment_mode" {
-  description = "Topology: standalone (app+db on one VM) | split_vm | split_managed"
+  description = "standalone: app+db on one VM | split_vm: app VM + DB VM in private subnet | split_managed: app VM + Azure PostgreSQL Flexible Server"
   type        = string
   default     = "standalone"
 
@@ -39,13 +39,13 @@ variable "clamav_enabled" {
 }
 
 variable "vm_size" {
-  description = "Azure VM size override. Leave null to auto-select based on clamav_enabled (Standard_B2ms with ClamAV, Standard_B2s without)."
+  description = "Azure VM size override. Leave null to auto-select based on clamav_enabled."
   type        = string
   default     = null
 }
 
 variable "root_disk_gb" {
-  description = "OS disk size in GB"
+  description = "OS disk size in GB for the application server"
   type        = number
   default     = 100
 }
@@ -68,10 +68,12 @@ variable "cicd_cidr" {
 }
 
 variable "ssh_public_key_path" {
-  description = "Path to the local SSH public key file (.pub). The private key stays on your machine."
+  description = "Path to the local SSH public key file (.pub)."
   type        = string
   default     = "~/.ssh/id_rsa.pub"
 }
+
+# ── Networking ────────────────────────────────────────────────────────────────
 
 variable "vnet_cidr" {
   description = "CIDR block for the virtual network"
@@ -83,4 +85,73 @@ variable "public_subnet_cidr" {
   description = "CIDR block for the public subnet"
   type        = string
   default     = "10.0.1.0/24"
+}
+
+variable "private_subnet_cidr" {
+  description = "CIDR block for the private subnet (DB VM in split_vm mode)"
+  type        = string
+  default     = "10.0.2.0/24"
+}
+
+variable "db_subnet_cidr" {
+  description = "CIDR block for the delegated PostgreSQL Flexible Server subnet (split_managed only)"
+  type        = string
+  default     = "10.0.3.0/24"
+}
+
+# ── Database (split topologies) ───────────────────────────────────────────────
+
+variable "db_password" {
+  description = "PostgreSQL administrator password. Required for split_vm and split_managed."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "db_name" {
+  description = "PostgreSQL database name"
+  type        = string
+  default     = "dmarc"
+}
+
+variable "db_admin_username" {
+  description = "PostgreSQL administrator username"
+  type        = string
+  default     = "dmarc_admin"
+}
+
+variable "db_vm_size" {
+  description = "Azure VM size for the DB VM (split_vm mode)"
+  type        = string
+  default     = "Standard_B2s"
+}
+
+variable "db_disk_gb" {
+  description = "OS disk size in GB for the DB VM (split_vm mode)"
+  type        = number
+  default     = 30
+}
+
+variable "db_sku_name" {
+  description = "Azure PostgreSQL Flexible Server compute SKU (split_managed mode)"
+  type        = string
+  default     = "B_Standard_B1ms"
+}
+
+variable "db_storage_mb" {
+  description = "Storage size for PostgreSQL Flexible Server in MB (split_managed mode, min 32768)"
+  type        = number
+  default     = 32768
+}
+
+variable "db_version" {
+  description = "PostgreSQL major version"
+  type        = string
+  default     = "16"
+}
+
+variable "db_backup_retention_days" {
+  description = "Days to retain automated database backups (split_managed mode)"
+  type        = number
+  default     = 7
 }
