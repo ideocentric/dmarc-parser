@@ -33,6 +33,8 @@ _MSR_EXEMPT_PATHS = {"/auth/login", "/auth/refresh", "/auth/logout",
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global _scheduler
+    from core.logging import configure_logging
+    configure_logging()  # must run after uvicorn initialises to own the root handlers
     init_db()
     from ingestion.scheduler import start_scheduler
     _scheduler = start_scheduler()

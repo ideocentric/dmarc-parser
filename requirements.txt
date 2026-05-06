@@ -1,5 +1,6 @@
 # Core
 fastapi>=0.111.0
+python-json-logger>=2.0.7  # structured JSON log output for centralized log shipping
 uvicorn[standard]>=0.29.0
 pydantic[email]>=2.7.0
 pydantic-settings>=2.2.0

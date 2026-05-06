@@ -29,7 +29,8 @@ def _poll_single_imap(config_id: int) -> None:
         if not client:
             return
 
-        log.info("IMAP poll starting for client '%s'", client.slug)
+        log.info("IMAP poll starting for client '%s'", client.slug,
+                 extra={"client": client.slug, "imap_config_id": config_id})
         try:
             result = poll_client_imap(config, client.slug, client.id, db)
             config.last_poll_status = "ok"
@@ -37,11 +38,15 @@ def _poll_single_imap(config_id: int) -> None:
                 f"Scanned {result.messages_scanned} message(s), "
                 f"ingested {result.reports_ingested} report(s)"
             )
-            log.info("IMAP poll OK for '%s': %s", client.slug, config.last_poll_message)
+            log.info("IMAP poll OK for '%s': %s", client.slug, config.last_poll_message,
+                     extra={"client": client.slug,
+                            "messages_scanned": result.messages_scanned,
+                            "reports_ingested": result.reports_ingested})
         except Exception as exc:
             config.last_poll_status = "error"
             config.last_poll_message = str(exc)[:512]
-            log.error("IMAP poll failed for '%s': %s", client.slug, exc)
+            log.error("IMAP poll failed for '%s': %s", client.slug, exc,
+                      extra={"client": client.slug, "error": str(exc)})
         finally:
             config.last_polled_at = datetime.now(timezone.utc)
             db.commit()

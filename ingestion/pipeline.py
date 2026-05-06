@@ -28,17 +28,23 @@ def _enrich_report_records(db: Session, client_id: int, client_slug: str) -> Non
     try:
         geo = enrich_geo(db, client_id)
         if geo["records_updated"]:
-            log.info("[%s] Geo enriched %d record(s)", client_slug, geo["records_updated"])
+            log.info("[%s] Geo enriched %d record(s)", client_slug, geo["records_updated"],
+                     extra={"client": client_slug, "records_updated": geo["records_updated"],
+                            "enrichment": "geo"})
     except Exception:
-        log.warning("[%s] Geo enrichment failed (non-fatal)", client_slug, exc_info=True)
+        log.warning("[%s] Geo enrichment failed (non-fatal)", client_slug, exc_info=True,
+                    extra={"client": client_slug, "enrichment": "geo"})
 
     try:
         whois = enrich_whois(db, client_id)
         if whois["records_updated"]:
             log.info("[%s] WHOIS enriched %d record(s) (%d unique IP(s) queried)",
-                     client_slug, whois["records_updated"], whois["ips_queried"])
+                     client_slug, whois["records_updated"], whois["ips_queried"],
+                     extra={"client": client_slug, "records_updated": whois["records_updated"],
+                            "ips_queried": whois["ips_queried"], "enrichment": "whois"})
     except Exception:
-        log.warning("[%s] WHOIS enrichment failed (non-fatal)", client_slug, exc_info=True)
+        log.warning("[%s] WHOIS enrichment failed (non-fatal)", client_slug, exc_info=True,
+                    extra={"client": client_slug, "enrichment": "whois"})
 
 
 def process_file(path: Path, client_slug: str, db: Session) -> bool:
@@ -50,7 +56,8 @@ def process_file(path: Path, client_slug: str, db: Session) -> bool:
         return False
 
     file_size = path.stat().st_size
-    log.info("[%s] Processing %s (%d bytes)", client_slug, path.name, file_size)
+    log.info("[%s] Processing %s (%d bytes)", client_slug, path.name, file_size,
+             extra={"client": client_slug, "report_file": path.name, "file_size": file_size})
 
     try:
         checksum = compute_checksum(path)
@@ -65,12 +72,15 @@ def process_file(path: Path, client_slug: str, db: Session) -> bool:
         log.warning(
             "[SECURITY][%s] Rejected %s (%d bytes): %s",
             client_slug, path.name, file_size, exc,
+            extra={"client": client_slug, "report_file": path.name,
+                   "file_size": file_size, "rejection_reason": str(exc)},
         )
         return False
     except Exception:
         log.exception(
             "[%s] Unexpected error extracting/parsing %s (%d bytes)",
             client_slug, path.name, file_size,
+            extra={"client": client_slug, "report_file": path.name, "file_size": file_size},
         )
         return False
 
@@ -78,11 +88,15 @@ def process_file(path: Path, client_slug: str, db: Session) -> bool:
         "[%s] Parsed %s — org=%r policy_domain=%r records=%d",
         client_slug, path.name,
         report_data.org_name, report_data.policy.domain, len(report_data.records),
+        extra={"client": client_slug, "report_file": path.name,
+               "org": report_data.org_name, "policy_domain": report_data.policy.domain,
+               "records": len(report_data.records)},
     )
 
     client = db.query(Client).filter_by(slug=client_slug, is_active=True).first()
     if not client:
-        log.error("[%s] Client not found in database", client_slug)
+        log.error("[%s] Client not found in database", client_slug,
+                  extra={"client": client_slug})
         return False
 
     domain_record = db.query(Domain).filter_by(
@@ -106,6 +120,7 @@ def process_file(path: Path, client_slug: str, db: Session) -> bool:
     except Exception:
         log.exception(
             "[%s] DB write failed for %s", client_slug, path.name,
+            extra={"client": client_slug, "report_file": path.name},
         )
         db.rollback()
         return False

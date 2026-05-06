@@ -3,17 +3,12 @@ Entry point — starts the file watcher and archive scheduler together.
 Run with:  python main.py
 """
 import logging
-import sys
-from core.config import settings
+from core.logging import configure_logging
 from core.database import init_db
 from ingestion.scheduler import start_scheduler
 from ingestion.watcher import start_watcher
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
+configure_logging()
 
 log = logging.getLogger(__name__)
 

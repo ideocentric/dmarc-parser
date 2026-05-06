@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     app_env: str = "development"
     secret_key: str  # required — set SECRET_KEY in .env; no default to prevent insecure deployments
     log_level: str = "INFO"
+    # "json" emits one JSON object per line (for Graylog / ELK / Loki shippers).
+    # "text" emits human-readable lines (default for local development).
+    # Automatically treated as "json" when app_env is not "development".
+    log_format: str = "text"
 
     # Database — single URL for all tenants
     # SQLite (default):      sqlite:///data/dmarc.db

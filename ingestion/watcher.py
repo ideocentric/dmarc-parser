@@ -22,7 +22,8 @@ class ReportHandler(FileSystemEventHandler):
         if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             return
 
-        log.info("[%s] Detected new file: %s", self.client_slug, path.name)
+        log.info("[%s] Detected new file: %s", self.client_slug, path.name,
+                 extra={"client": self.client_slug, "report_file": path.name})
         db = SessionLocal()
         try:
             processed = process_file(path, self.client_slug, db)
@@ -44,7 +45,8 @@ def start_watcher(poll_interval: int = 2) -> None:
             _watch_client(observer, client_dir.name, watched)
 
     observer.start()
-    log.info("File watcher started. Monitoring %s", incoming_root)
+    log.info("File watcher started. Monitoring %s", incoming_root,
+             extra={"watch_root": str(incoming_root)})
 
     try:
         while True:
@@ -63,4 +65,5 @@ def _watch_client(observer: Observer, client_slug: str, watched: set[str]):
     path.mkdir(parents=True, exist_ok=True)
     observer.schedule(ReportHandler(client_slug), str(path), recursive=False)
     watched.add(client_slug)
-    log.info("Watching %s for client '%s'", path, client_slug)
+    log.info("Watching %s for client '%s'", path, client_slug,
+             extra={"client": client_slug, "watch_path": str(path)})
