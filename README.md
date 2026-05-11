@@ -203,7 +203,7 @@ docker compose --env-file .env.docker up --build -d
 ### Prerequisites
 
 - Python 3.13+
-- Node.js 18+
+- Node.js 22+ (Vite 8 requires Node 22+; Node 26 recommended — matches the Docker build image)
 - PostgreSQL 15+ (or use SQLite for quick local work — see Configuration Reference)
 
 ### 1. Install Python dependencies

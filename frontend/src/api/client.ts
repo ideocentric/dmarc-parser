@@ -15,7 +15,10 @@ api.interceptors.response.use(
   (r) => r,
   async (error) => {
     const original = error.config;
-    if (error.response?.status === 401 && !original._retry) {
+    // Never retry auth endpoints — prevents an infinite refresh loop when
+    // authApi.refresh() itself 401s (no valid session cookie on first load).
+    const isAuthEndpoint = original?.url?.startsWith("/auth/");
+    if (error.response?.status === 401 && !original._retry && !isAuthEndpoint) {
       original._retry = true;
       try {
         // No body needed — refresh_token cookie is sent automatically
@@ -25,7 +28,9 @@ api.interceptors.response.use(
         return api(original);
       } catch {
         localStorage.removeItem("access_token");
-        window.location.href = "/login";
+        // Soft signal to AuthContext — avoids a hard page reload that would
+        // restart the cycle. AuthContext clears state; React Router navigates.
+        window.dispatchEvent(new Event("auth:session-expired"));
       }
     }
     return Promise.reject(error);

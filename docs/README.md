@@ -38,7 +38,7 @@ ls docker-data/reports/incoming/acme-test/        # sample reports present?
 python scripts/screenshot_accounts.py
 ```
 
-This creates two test accounts (`screenshot-viewer@example.com` and `screenshot-mfa@example.com`), assigns them to `acme-test`, enables TOTP MFA on the MFA test account, and saves credentials + the MFA secret to `scripts/.screenshot_state.json` (git-ignored).
+This creates two test accounts (`alice@example.com` and `bob@example.com`), assigns them to `acme-test`, enables TOTP MFA on the MFA test account (`bob@example.com`), and saves credentials + the MFA secret to `scripts/.screenshot_state.json` (git-ignored).
 
 Options:
 ```bash

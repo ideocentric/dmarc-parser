@@ -25,7 +25,7 @@
 ## Prerequisites
 
 - Python 3.13+
-- Node.js 18+ and npm
+- Node.js 22+ and npm (Vite 8 requires Node 22+; Node 18 is end-of-life. Node 26 recommended — matches the Docker build image)
 - PostgreSQL 15+ (or use SQLite for quick local work — see below)
 - Docker + Docker Compose (for integration testing)
 - Git
@@ -723,6 +723,7 @@ All settings are read from the `.env` file (or environment variables). Settings 
 | `APP_ENV` | `development` | No | `development` or `production`. Controls refresh token `secure` cookie flag. |
 | `SECRET_KEY` | — | **Yes** | JWT signing key (HS256). Any long random string. |
 | `LOG_LEVEL` | `INFO` | No | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `LOG_FORMAT` | `text` | No | `text` (human-readable) or `json` (structured JSON for Graylog / ELK / Loki). Automatically defaults to `json` when `APP_ENV` is not `development`. |
 | `DATABASE_URL` | `sqlite:///data/dmarc.db` | **Yes (prod)** | SQLAlchemy connection URL |
 | `REPORTS_BASE_DIR` | `data/reports` | No | Root for `incoming/` and `archive/` subdirs |
 | `ARCHIVE_RETENTION_DAYS` | `7` | No | Days before archived report files are purged |
@@ -753,7 +754,7 @@ Screenshots in `user-guide.md` and `admin-guide.md` are captured automatically u
 | Script | Purpose |
 |--------|---------|
 | `scripts/screenshot_accounts.py` | Creates/resets the two test accounts needed for capture |
-| `scripts/capture_screenshots.py` | Playwright browser automation — navigates and saves 26 PNGs to `docs/images/` |
+| `scripts/capture_screenshots.py` | Playwright browser automation — navigates and saves 28 PNGs to `docs/images/` |
 | `scripts/inject_screenshots.py` | Replaces `📸 Screenshot needed` placeholder blocks in the docs with `![...](images/...)` tags |
 | `scripts/generate_pdfs.py` | Renders the markdown docs to PDF using Pandoc + Playwright's Chromium |
 
@@ -780,7 +781,7 @@ docker compose --env-file .env.docker up -d
 # 2. Set up test accounts — idempotent, safe to re-run
 python scripts/screenshot_accounts.py
 
-# 3. Capture all 26 screenshots → docs/images/
+# 3. Capture all 28 screenshots → docs/images/
 python scripts/capture_screenshots.py
 
 # 4. Inject images into the markdown files
@@ -852,10 +853,10 @@ The capture script opens four isolated browser contexts to avoid session contami
 | Session | Account | Screenshots |
 |---------|---------|-------------|
 | Unauthenticated | — | SS-U-01 (login page) |
-| MFA mid-login | `screenshot-mfa@example.com` | SS-U-02 (TOTP prompt, before code is entered) |
-| Viewer | `screenshot-viewer@example.com` | SS-U-03 to SS-U-15 |
-| MFA-test (full login) | `screenshot-mfa@example.com` | SS-U-16 (disable MFA page) |
-| Admin | `admin@example.com` (super\_admin) | SS-A-01 to SS-A-10 |
+| MFA mid-login | `bob@example.com` | SS-U-02 (TOTP prompt, before code is entered) |
+| Viewer | `alice@example.com` | SS-U-03 to SS-U-15 |
+| MFA-test (full login) | `bob@example.com` | SS-U-16 (disable MFA page) |
+| Admin | `admin@example.com` (super\_admin) | SS-A-01 to SS-A-12 |
 
 The MFA test account is set up with a known TOTP secret by `screenshot_accounts.py`. The secret is saved to the state file so `capture_screenshots.py` can generate valid codes with `pyotp.TOTP(secret).now()` at runtime.
 
@@ -937,7 +938,7 @@ python tests/generate_sample_data.py
 # Use a different seed to get different fake company names
 python tests/generate_sample_data.py --seed 99
 
-# Capture all 26 screenshots
+# Capture all 28 screenshots
 python scripts/capture_screenshots.py
 
 # Capture a single screenshot (faster iteration)

@@ -49,6 +49,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshUser]);
 
+  // Clear auth state when the axios interceptor detects a session expiry on
+  // a non-auth API call. React Router then navigates to /login naturally —
+  // no hard page reload.
+  useEffect(() => {
+    const handleExpired = () => {
+      setUser(null);
+      localStorage.removeItem("access_token");
+    };
+    window.addEventListener("auth:session-expired", handleExpired);
+    return () => window.removeEventListener("auth:session-expired", handleExpired);
+  }, []);
+
   const login = async (email: string, password: string): Promise<LoginResult> => {
     const result = await authApi.login(email, password);
     if (result.mfa_required && result.mfa_token) {
