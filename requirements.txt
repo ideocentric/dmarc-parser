@@ -35,7 +35,7 @@ ipwhois>=1.2.0             # WHOIS / RDAP lookups for IP ownership
 # Dev / testing
 pytest>=8.2.0
 pytest-asyncio>=1.3.0
-httpx>=0.27.0              # FastAPI test client
+httpx>=0.28.1              # FastAPI test client
 playwright>=1.45.0         # automated screenshot capture (docs)
 faker>=26.0.0              # deterministic fake data for DMARC sample report generation
 dnspython>=2.8.0           # DNS lookups for build_ip_table.py (SPF/MX resolution)
