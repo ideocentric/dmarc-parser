@@ -25,7 +25,7 @@
 ## Prerequisites
 
 - Python 3.13+
-- Node.js 22+ and npm (Vite 8 requires Node 22; Node 18 is end-of-life)
+- Node.js 22+ and npm (Vite 8 requires Node 22+; Node 18 is end-of-life. Node 26 recommended — matches the Docker build image)
 - PostgreSQL 15+ (or use SQLite for quick local work — see below)
 - Docker + Docker Compose (for integration testing)
 - Git
