@@ -75,8 +75,9 @@ export ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; prin
 | `tests/test_parser.py` | DMARC XML parser — field extraction, date handling, malformed input |
 | `tests/test_ingestion_security.py` | Ingestion security — 37 tests covering GZ/ZIP size limits, compression ratio (ZIP bomb), path traversal, spoofed ZIP headers, multi-XML ZIPs, encoding fallback, XML sniff, record/count/timestamp bounds, source IP validation, XXE and billion-laughs blocking, IMAP attachment size/count limits and type rejection, ClamAV call-point integration |
 | `tests/test_scanner.py` | ClamAV scanner — 9 tests covering disabled no-op, clean pass, FOUND/ERROR rejection, fail-closed and fail-open behaviour when clamd is unreachable, ping, and missing-package error |
+| `tests/test_logging.py` | Structured logging — 16 tests covering text and JSON format output, required JSON fields (`timestamp`, `level`, `logger`, `message`, `environment`, `service`), extra ingestion fields (`client`, `report_file`, `org`, `records`, etc.), `report_file` not clobbering the built-in `LogRecord.filename`, and idempotent handler setup |
 
-**Total: 162 tests, all passing.**
+**Total: 178 tests, all passing.**
 
 ### Key fixtures (`tests/conftest.py`)
 
