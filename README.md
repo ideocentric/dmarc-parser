@@ -2,6 +2,9 @@
 
 Multi-tenant DMARC aggregate report ingestion, analysis, and alerting system. Supports file-drop and IMAP-based report collection, a single PostgreSQL database with per-client row-level scoping, pluggable intelligence rules, and a React web UI.
 
+[![GitHub Stars](https://img.shields.io/github/stars/ideocentric/dmarc-parser?style=social)](https://github.com/ideocentric/dmarc-parser)
+If this is useful to you, a star helps others find it.
+
 ---
 
 ## Table of Contents
