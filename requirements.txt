@@ -18,7 +18,7 @@ bcrypt>=4.0.0
 python-multipart>=0.0.9    # form data for login
 slowapi>=0.1.9             # rate limiting for login/refresh endpoints
 pyotp>=2.9.0               # TOTP generation/validation (RFC 6238) for MFA
-qrcode[pil]>=7.4.1         # QR code generation for authenticator app enrolment (pil extra pulls in Pillow)
+qrcode[pil]>=8.2         # QR code generation for authenticator app enrolment (pil extra pulls in Pillow)
 msal>=1.36.0               # Azure SSO
 
 # File ingestion
