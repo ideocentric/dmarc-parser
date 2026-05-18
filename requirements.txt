@@ -13,7 +13,7 @@ psycopg2-binary>=2.9.9     # PostgreSQL driver
 aiosqlite>=0.20.0          # async SQLite driver (local dev fallback)
 
 # Auth
-PyJWT>=2.8.0               # replaces python-jose (CVE-2024-33664/33663, abandoned)
+PyJWT>=2.12.1               # replaces python-jose (CVE-2024-33664/33663, abandoned)
 bcrypt>=4.0.0
 python-multipart>=0.0.9    # form data for login
 slowapi>=0.1.9             # rate limiting for login/refresh endpoints
