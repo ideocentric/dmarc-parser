@@ -8,7 +8,7 @@ python-dotenv>=1.0.0
 
 # Database1
 sqlalchemy>=2.0.0
-alembic>=1.13.0
+alembic>=1.18.4
 psycopg2-binary>=2.9.9     # PostgreSQL driver
 aiosqlite>=0.20.0          # async SQLite driver (local dev fallback)
 
