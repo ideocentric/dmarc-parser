@@ -2,9 +2,9 @@ name: CI/CD — Azure
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Required GitHub Secrets (Settings → Secrets and variables → Actions):
@@ -19,6 +19,11 @@ on:
 #
 # The VM uses its managed identity (AcrPull role) to pull images — no ACR
 # credentials need to be stored on the instance.
+#
+# Required repository variable (Settings → Secrets and variables → Actions →
+# Variables) to enable build, push and deploy:
+#   DEPLOY_TARGET           = azure
+# Without it, pushes and pull requests run the test job only.
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
@@ -45,7 +50,13 @@ jobs:
     name: Build & Push to ACR
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only on pushes to master, and only when this repo deploys to Azure.
+    # Set the repository variable DEPLOY_TARGET to 'azure' to enable; leave it
+    # unset (or set it to 'aws') and only the test job runs.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      vars.DEPLOY_TARGET == 'azure'
 
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
