@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim AS base
 
 # Build dependencies needed for bcrypt and cryptography wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,3 +18,12 @@ RUN mkdir -p data/reports/incoming data/reports/archive data/clients
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
+
+# Test image: production plus the test and tooling packages from
+# requirements-dev.txt. CI builds this one with `--target test`.
+FROM base AS test
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# Production image, without test tools. It stays the LAST stage, so a plain
+# `docker build .` (compose, the deploy jobs) still produces it.
+FROM base AS production
