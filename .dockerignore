@@ -39,3 +39,7 @@ logs/
 
 # Example Data
 example-data/
+
+# Local-only working files (untracked; never part of an image)
+discovery/
+CLAUDE.local.md
