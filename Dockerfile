@@ -1,8 +1,8 @@
 FROM python:3.14-slim AS base
 
-# Build dependencies needed for bcrypt and cryptography wheels
+# curl is used by the compose healthchecks. No compiler: every locked
+# package ships a binary wheel for CPython 3.14 on x86_64 and aarch64.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
