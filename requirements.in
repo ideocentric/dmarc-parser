@@ -1,0 +1,53 @@
+# Direct dependencies and their minimum versions. Edit THIS file, then
+# regenerate the lockfile (requirements.txt) under Python 3.14, the version
+# the Docker image uses:
+#
+#   pip install pip-tools
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#       --output-file=requirements.txt requirements.in
+#
+# requirements.txt pins every package, direct and transitive, with hashes,
+# so builds are reproducible and Dependabot / pip-audit see exact versions.
+
+# Core
+fastapi>=0.111.0
+python-json-logger>=2.0.7  # structured JSON log output for centralized log shipping
+uvicorn[standard]>=0.46.0
+pydantic[email]>=2.13.4
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.0
+
+# Database1
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+psycopg2-binary>=2.9.9     # PostgreSQL driver
+aiosqlite>=0.20.0          # async SQLite driver (local dev fallback)
+
+# Auth
+PyJWT>=2.8.0               # replaces python-jose (CVE-2024-33664/33663, abandoned)
+bcrypt>=4.0.0
+python-multipart>=0.0.9    # form data for login
+slowapi>=0.1.9             # rate limiting for login/refresh endpoints
+pyotp>=2.9.0               # TOTP generation/validation (RFC 6238) for MFA
+qrcode[pil]>=8.2         # QR code generation for authenticator app enrolment (pil extra pulls in Pillow)
+msal>=1.36.0               # Azure SSO
+
+# File ingestion
+defusedxml>=0.7.1          # safe XML parsing — prevents entity expansion attacks
+watchdog>=4.0.0
+apscheduler>=3.11.2
+imapclient>=3.1.0          # IMAP mailbox polling
+cryptography>=42.0.4       # Fernet encryption for stored credentials (42.0.0-42.0.3 had CVE-2024-26130)
+
+# Intelligence
+geoip2>=4.8.0              # MaxMind GeoLite2
+ipwhois>=1.2.0             # WHOIS / RDAP lookups for IP ownership
+
+# Dev / testing
+pytest>=9.0.3
+pytest-asyncio>=1.3.0
+httpx>=0.28.1              # FastAPI test client
+playwright>=1.45.0         # automated screenshot capture (docs)
+faker>=26.0.0              # deterministic fake data for DMARC sample report generation
+dnspython>=2.8.0           # DNS lookups for build_ip_table.py (SPF/MX resolution)
+clamd>=1.0.2               # ClamAV daemon client — required only when CLAMAV_ENABLED=true
