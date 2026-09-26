@@ -2,9 +2,9 @@ name: CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   AWS_REGION: us-east-1   # Must match the region in terraform.tfvars
@@ -22,6 +22,11 @@ env:
 # SSH secrets (only needed if not using SSM for deployment):
 #   EC2_HOST                — public IP (from terraform output public_ip)
 #   EC2_SSH_KEY             — contents of your private key file (~/.ssh/id_rsa)
+#
+# Required repository variable (Settings → Secrets and variables → Actions →
+# Variables) to enable build, push and deploy:
+#   DEPLOY_TARGET           = aws
+# Without it, pushes and pull requests run the test job only.
 # ─────────────────────────────────────────────────────────────────────────────
 
 jobs:
@@ -48,8 +53,13 @@ jobs:
     name: Build & Push to ECR
     needs: test
     runs-on: ubuntu-latest
-    # Only run on pushes to main — not on pull requests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only on pushes to master, and only when this repo deploys to AWS.
+    # Set the repository variable DEPLOY_TARGET to 'aws' to enable; leave it
+    # unset (or set it to 'azure') and only the test job runs.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      vars.DEPLOY_TARGET == 'aws'
 
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
